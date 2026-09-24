@@ -186,8 +186,7 @@ Chaque stratégie inclut :
 - Preuves de concept (proof checked)
 
 ## 🎯 Résultats Attendus
-
-D'après la stratégie oliverlist incluse en référence :
+Exemple:
 - **120 demandes de devis qualifiées** par trimestre
 - **25% de conversion** démo → client
 - **300 000€ de pipeline** généré par LinkedIn
