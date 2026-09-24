@@ -1,13 +1,8 @@
 # Mplatform
 
-Voici un README professionnel pour votre plateforme de génération de stratégie marketing propulsée par l'IA :
 
----
 
 # Marketing Strategy AI Platform
-
-##  Vue d'ensemble
-
 Plateforme SaaS de génération automatique de stratégies marketing B2B propulsée par l'intelligence artificielle. L'outil permet aux entreprises de créer des profils de clients idéaux (ICP), des analyses de marché (TAM/SAM/SOM), des buyer personas détaillés et des plans marketing complets en quelques clics.
 
 ## ✨ Fonctionnalités Principales
