@@ -1,0 +1,6 @@
+[functions.generate-strategy]
+verify_jwt = false
+timeout = "300s"
+
+[functions.generate-content]
+verify_jwt = true
