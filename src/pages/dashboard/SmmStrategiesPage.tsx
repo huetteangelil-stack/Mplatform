@@ -14,12 +14,24 @@ interface StrategyRecord {
   smm_strategy: SmmStrategy | null;
 }
 
+interface MarketContribution {
+  source: string;
+  customers: number;
+  anchor?: string;
+}
+
 interface MarketLayer {
   description: string;
-  potentialCustomers: string;
-  acv: string;
-  marketValue: string;
+  potentialCustomers: number;
+  acv: number;
+  marketValue: number;
   rationale: string;
+  basedOnEstimates?: boolean; // v2.3: true if any input behind this figure is tagged "estimate"
+  contributions?: MarketContribution[]; // v2.3: SOM only — the named contributions summed to get potentialCustomers
+}
+
+function formatNumber(n: number): string {
+  return n.toLocaleString('fr-FR', { maximumFractionDigits: 0 });
 }
 
 interface Persona {
@@ -82,10 +94,15 @@ export function SmmStrategiesPage() {
     setIsGenerating(true);
     setError('');
     try {
+      // v2.3: this page only renders inside the authenticated dashboard, so a session is
+      // always expected here.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Session expirée, veuillez vous reconnecter.');
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-content`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          Authorization: `Bearer ${session.access_token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ mode: 'smm_strategy', strategy: selectedStrategy.strategy_data }),
@@ -290,23 +307,41 @@ function MarketCard({ layer, label, title, color, icon }: { layer: MarketLayer; 
           <p className={`text-xs font-bold ${c.text}`}>{label}</p>
           <h3 className="font-bold text-gray-900 text-base">{title}</h3>
         </div>
-        <span className={`ml-auto text-lg font-bold ${c.text}`}>{layer.marketValue}</span>
+        <span className={`ml-auto text-lg font-bold ${c.text}`}>{formatNumber(layer.marketValue)}</span>
       </div>
       <p className="text-sm text-gray-700 leading-relaxed mb-4">{layer.description}</p>
+      {layer.basedOnEstimates && (
+        <p className="text-xs font-medium text-amber-600 bg-amber-50 inline-block px-2 py-0.5 rounded-full mb-3">
+          Basé en partie sur des estimations non vérifiées
+        </p>
+      )}
       <div className="grid grid-cols-3 gap-4">
         <div>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Potential customers</p>
-          <p className="text-sm text-gray-800 font-medium mt-1">{layer.potentialCustomers}</p>
+          <p className="text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.potentialCustomers)}</p>
         </div>
         <div>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">ACV</p>
-          <p className="text-sm text-gray-800 font-medium mt-1">{layer.acv}</p>
+          <p className="text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.acv)}</p>
         </div>
         <div>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Market value</p>
-          <p className="text-sm text-gray-800 font-medium mt-1">{layer.marketValue}</p>
+          <p className="text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.marketValue)}</p>
         </div>
       </div>
+      {layer.contributions && layer.contributions.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-gray-200">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Détail du calcul</p>
+          <ul className="space-y-1">
+            {layer.contributions.map((c2, i) => (
+              <li key={i} className="text-xs text-gray-600 flex justify-between gap-2">
+                <span>{c2.source}{c2.anchor?.trim().toLowerCase() === 'estimate' && <span className="text-amber-600"> (estimation)</span>}</span>
+                <span className="font-medium text-gray-800">{formatNumber(c2.customers)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <p className="text-xs text-gray-500 mt-4 leading-relaxed">{layer.rationale}</p>
     </div>
   );
