@@ -37,8 +37,8 @@ interface Strategy {
     goals: string[];
   };
   channels: { primary: string[]; secondary: string[] };
-  tactics: string[];
-  kpis: string[];
+  tactics: (string | { tactic: string; anchor?: string })[];
+  kpis: (string | { metric: string; anchor?: string })[];
   timeline: string;
 }
 
@@ -174,11 +174,16 @@ export function ContentCreationPage() {
   };
 
   const callContentAPI = async (payload: Record<string, unknown>): Promise<unknown> => {
+    // v2.3: this page only renders inside the authenticated dashboard (DashboardLayout
+    // redirects to /signin otherwise), so a session is always expected here.
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error('Session expired, please sign in again.');
+
     const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-content`;
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        Authorization: `Bearer ${session.access_token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
