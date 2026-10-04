@@ -46,9 +46,20 @@ interface Strategy {
     primary: string[];
     secondary: string[];
   };
-  tactics: string[];
-  kpis: string[];
+  // v2.3: generate-strategy now returns { tactic|metric, anchor } objects so numbers can be
+  // traced back to evidence or flagged as "estimate". Both shapes are accepted here so
+  // previously-saved strategies (plain strings) keep rendering correctly.
+  tactics: (string | { tactic: string; anchor?: string })[];
+  kpis: (string | { metric: string; anchor?: string })[];
   timeline: string;
+}
+
+function itemText(item: string | { tactic?: string; metric?: string; anchor?: string }): string {
+  return typeof item === 'string' ? item : (item.tactic ?? item.metric ?? '');
+}
+
+function isEstimate(item: string | { anchor?: string }): boolean {
+  return typeof item !== 'string' && item.anchor?.trim().toLowerCase() === 'estimate';
 }
 
 export function StrategyResultPage() {
@@ -110,11 +121,17 @@ export function StrategyResultPage() {
         const decoded = JSON.parse(decodeURIComponent(domain || ''));
         setFormData(decoded);
 
+        // v2.3: send the real user session token when one exists (logged-in caller gets a
+        // higher quota server-side), otherwise fall back to the anon key — /strategy stays
+        // usable without an account, this only upgrades identification when possible.
+        const { data: { session } } = await supabase.auth.getSession();
+        const authToken = session?.access_token ?? import.meta.env.VITE_SUPABASE_ANON_KEY;
+
         const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-strategy`;
         const response = await fetch(apiUrl, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+            'Authorization': `Bearer ${authToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(decoded)
@@ -279,13 +296,14 @@ export function StrategyResultPage() {
       // Tactics Section
       addSectionTitle('Marketing Tactics');
       strategy.tactics.forEach((tactic, idx) => {
-        addText(`${idx + 1}. ${tactic}`, margin + 2, 10, 'normal', [55, 65, 81]);
+        addText(`${idx + 1}. ${itemText(tactic)}`, margin + 2, 10, 'normal', [55, 65, 81]);
       });
 
       // KPIs Section
       addSectionTitle('Key Performance Indicators');
       strategy.kpis.forEach(kpi => {
-        addText(`  -  ${kpi}`, margin + 2, 10, 'normal', [75, 85, 99]);
+        const suffix = isEstimate(kpi) ? '  (estimate)' : '';
+        addText(`  -  ${itemText(kpi)}${suffix}`, margin + 2, 10, 'normal', [75, 85, 99]);
       });
 
       // Timeline Section
@@ -614,7 +632,12 @@ export function StrategyResultPage() {
                   >
                     <div className="flex gap-3">
                       <span className="text-blue-600 font-bold text-lg flex-shrink-0">{idx + 1}</span>
-                      <p className="text-gray-700">{tactic}</p>
+                      <p className="text-gray-700">
+                        {itemText(tactic)}
+                        {isEstimate(tactic) && (
+                          <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
+                        )}
+                      </p>
                     </div>
                   </div>
                 ))}
@@ -629,7 +652,12 @@ export function StrategyResultPage() {
                     key={idx}
                     className="p-4 bg-gradient-to-br from-green-50 to-gray-50 rounded-lg border border-green-100"
                   >
-                    <p className="text-gray-700 text-sm">{kpi}</p>
+                    <p className="text-gray-700 text-sm">
+                      {itemText(kpi)}
+                      {isEstimate(kpi) && (
+                        <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
+                      )}
+                    </p>
                   </div>
                 ))}
               </div>
