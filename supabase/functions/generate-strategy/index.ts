@@ -1,30 +1,68 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
 
 /**
- * generate-strategy — v2.1 (multi-source grounding: CRAWL + GOOGLE SERP + LINKEDIN/APIFY)
+ * generate-strategy — v2.3 (grounding + anonymous-aware security + reliability hardening)
  * ---------------------------------------------------------------------------------------
- * v2.1 adds:
- *  1. SERP research (SerpApi, key: SERPAPI_API_KEY or SERPAPI-APIKEY/SERPAPI-API-KEY in .env):
- *     4 parallel Google queries (brand, brand+services, site:domain, brand+linkedin)
- *     => titles/snippets/links feed the intelligence dossier even when the site
- *     blocks the crawler ("site non crawlable").
- *  2. LinkedIn company page via Apify (key: APIFY_API_KEY / APIFY-API-KEY), actor
- *     vobocye84LF1wBJBI (override with APIFY_ACTOR_ID): URL discovered from crawl
- *     social links, SERP results or form field `linkedinUrl`; run started with
- *     waitForFinish, dataset flattened into readable text.
- *  3. Evidence tagged by source ("crawl:", "serp:", "linkedin:", "form") and
- *     SOURCE PRECEDENCE crawl > linkedin > serp > form when sources conflict.
- *  4. Business goal made explicit in the prompt: generate qualified leads and sales.
- *  5. Everything (crawl + serp + linkedin) is injected in BOTH LLM calls.
+ * v2.3 revises v2.2 after checking the actual app: /strategy (StrategyPage.tsx →
+ * StrategyResultPage.tsx) is an intentionally public, no-login entry point (the free-trial
+ * hook), and generate-strategy is only ever called once per business — there is no
+ * "regenerate" UI for it anywhere in the app. Two v2.2 items are changed accordingly:
+ *
+ *  3'. SECURITY (revised): the endpoint stays PUBLIC — it no longer hard-rejects requests
+ *     without a session. If a valid user JWT is present (Authorization: Bearer <token>), the
+ *     caller is identified as "user:<uuid>" and gets DAILY_GENERATION_QUOTA/day. Otherwise
+ *     it's identified by IP as "ip:<address>" and gets the much lower ANONYMOUS_DAILY_QUOTA/
+ *     day. Either way, a quota is enforced BEFORE any paid crawl/SerpApi/Apify/DeepSeek call.
+ *     CORS origin is configurable via ALLOWED_ORIGIN instead of a hardcoded "*".
+ *
+ *  5'. CACHING REMOVED: v2.2's strategy_cache table was dead code for this app — nothing
+ *     calls generate-strategy more than once per business today. Removed to cut surface
+ *     area; reintroduce it if a "regenerate" flow is built later.
+ *
+ * Unchanged from v2.2:
+ *  1. GROUNDING (root-cause fix): kpis[] and tactics[] are objects { metric|tactic, anchor }.
+ *     "anchor" is a source-tagged verbatim quote or the literal string "estimate". Stops
+ *     fabricated numbers (e.g. "120 leads/quarter") from silently feeding downstream
+ *     market-sizing (TAM/SAM/SOM) as if they were facts.
+ *  2. VALIDATION: validateStrategy() enforces the anchor field structurally; scanEstimatedClaims()
+ *     lists every "estimate"-tagged KPI/tactic in _meta.estimatedClaims.
+ *  4. RELIABILITY: LinkedIn/Apify enrichment has a hard budget (LINKEDIN_TIMEOUT_MS) on the
+ *     request's critical path, so a slow Apify run can never cause a timeout during a live demo.
+ *  6. TUNING: strategy-generation temperature lowered from 0.6 to 0.3.
+ *
+ * New table required (run once, e.g. via the Supabase SQL editor or a migration):
+ *
+ *   CREATE TABLE IF NOT EXISTS generation_quota (
+ *     subject text NOT NULL,   -- 'user:<uuid>' for logged-in calls, 'ip:<address>' otherwise
+ *     day date NOT NULL,
+ *     count integer NOT NULL DEFAULT 0,
+ *     PRIMARY KEY (subject, day)
+ *   );
+ *
+ * New env vars: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (both auto-injected in Supabase Edge
+ * Functions), ALLOWED_ORIGIN (optional, defaults to "*" — set it in production).
+ *
+ * Front-end change needed (optional but recommended): in StrategyResultPage.tsx, send the
+ * real session token when one exists (`session?.access_token`) instead of always sending the
+ * anon key, so logged-in callers get DAILY_GENERATION_QUOTA instead of the anonymous IP quota.
+ * Anonymous visitors keep working exactly as today — no change required for them.
+ *
+ * supabase/config.toml stays as-is: `verify_jwt = false` on this function is CORRECT (it must
+ * stay callable without a Supabase-signed session at the platform gate) — the quota above is
+ * the actual protection now.
  *
  * Requires: supabase config.toml -> [functions.generate-strategy] timeout = "300s"
- *           (Apify run can take up to ~100 s).
+ *           (Apify run can take up to ~100 s server-side; the request itself now never waits
+ *           more than LINKEDIN_TIMEOUT_MS for it).
  *
- * Output JSON schema = v1 schema + siteAnalysis/anchors/_meta (front unchanged).
+ * Output JSON schema = v2.1 schema, with kpis/tactics now object arrays (see point 1) and an
+ * extended _meta (estimatedClaims).
  */
 
+const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || "*"; // v2.2: set this in production instead of "*"
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
@@ -76,6 +114,9 @@ const PAGE_BUDGET = 2500;
 const TOTAL_BUDGET = 14000;
 const APIFY_ACTOR_DEFAULT = "vobocye84LF1wBJBI";
 const APIFY_WAIT_SECONDS = 90;
+const LINKEDIN_TIMEOUT_MS = 20000; // hard budget on the critical path, never blocks a demo
+const DAILY_GENERATION_QUOTA = 20; // v2.3: per logged-in user
+const ANONYMOUS_DAILY_QUOTA = 5; // v2.3: per IP, for the public /strategy trial flow — tighter since this path pays for crawl+SERP+Apify+2 LLM calls
 
 function envFirst(names: string[]): string | undefined {
   for (const n of names) {
@@ -86,7 +127,7 @@ function envFirst(names: string[]): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// CRAWL (direct website scan)
+// CRAWL (direct website scan) — unchanged from v2.1
 // ---------------------------------------------------------------------------
 
 function normalizeUrl(u: string): string {
@@ -294,7 +335,7 @@ function buildSiteDossier(pages: PageExtract[], manualSiteContent?: string): str
 }
 
 // ---------------------------------------------------------------------------
-// SERP research (SerpApi / Google)
+// SERP research (SerpApi / Google) — unchanged from v2.1
 // ---------------------------------------------------------------------------
 
 async function serpSearch(query: string, apiKey: string, hl: string): Promise<SerpResult | null> {
@@ -356,7 +397,8 @@ function discoverLinkedInUrl(sources: string[], formUrl?: string): string | null
 }
 
 // ---------------------------------------------------------------------------
-// LinkedIn company page via Apify
+// LinkedIn company page via Apify — unchanged from v2.1 (call site now races
+// against LINKEDIN_TIMEOUT_MS, see handler below)
 // ---------------------------------------------------------------------------
 
 function flattenLinkedInItem(item: any): string {
@@ -439,7 +481,7 @@ async function apifyLinkedInCompany(companyUrl: string, token: string): Promise<
 }
 
 // ---------------------------------------------------------------------------
-// DeepSeek helper + JSON robustness
+// DeepSeek helper + JSON robustness — unchanged from v2.1
 // ---------------------------------------------------------------------------
 
 async function callDeepSeek(messages: { role: string; content: string }[], opts: { temperature: number; maxTokens: number }): Promise<string> {
@@ -493,6 +535,26 @@ function extractJsonObject(content: string): unknown | null {
   return null;
 }
 
+// v2.2: enforces { textField, anchor } shape on kpis/tactics instead of plain strings
+function reqAnchoredArray(path: string, arr: any, min: number, textField: string, problems: string[]) {
+  if (!Array.isArray(arr) || arr.length < min) {
+    problems.push(path + " (array >= " + min + ")");
+    return;
+  }
+  arr.forEach((item: any, i: number) => {
+    if (!item || typeof item !== "object") {
+      problems.push(path + "[" + i + "] is not an object (expected { " + textField + ", anchor })");
+      return;
+    }
+    if (typeof item[textField] !== "string" || item[textField].trim().length < 3) {
+      problems.push(path + "[" + i + "]." + textField);
+    }
+    if (typeof item.anchor !== "string" || !item.anchor.trim()) {
+      problems.push(path + "[" + i + "].anchor");
+    }
+  });
+}
+
 function validateStrategy(s: any): string[] {
   const problems: string[] = [];
   const reqStr = (path: string, v: any) => { if (typeof v !== "string" || v.trim().length < 3) problems.push(path); };
@@ -515,10 +577,28 @@ function validateStrategy(s: any): string[] {
   reqArr("icp.goals", s.icp?.goals, 4);
   reqArr("channels.primary", s.channels?.primary, 4);
   reqArr("channels.secondary", s.channels?.secondary, 4);
-  reqArr("tactics", s.tactics, 6);
-  reqArr("kpis", s.kpis, 6);
+  reqAnchoredArray("tactics", s.tactics, 6, "tactic", problems); // v2.2: was reqArr("tactics", s.tactics, 6)
+  reqAnchoredArray("kpis", s.kpis, 6, "metric", problems); // v2.2: was reqArr("kpis", s.kpis, 6)
   reqStr("timeline", s.timeline);
   return problems;
+}
+
+// v2.2: surfaces every KPI/tactic explicitly tagged "estimate" so the UI can flag it as
+// unverified instead of presenting it as a fact (this is what feeds downstream TAM/SAM/SOM).
+function scanEstimatedClaims(s: any): string[] {
+  const flags: string[] = [];
+  const check = (arr: any[], label: string, textField: string) => {
+    (arr ?? []).forEach((item: any, i: number) => {
+      const anchor = typeof item === "object" ? item.anchor : undefined;
+      if (typeof anchor === "string" && anchor.trim().toLowerCase() === "estimate") {
+        const text = typeof item === "object" ? item[textField] : String(item);
+        flags.push(label + "[" + i + "]: " + text);
+      }
+    });
+  };
+  check(s?.kpis, "kpis", "metric");
+  check(s?.tactics, "tactics", "tactic");
+  return flags;
 }
 
 // ---------------------------------------------------------------------------
@@ -585,7 +665,7 @@ function buildStrategyPrompt(opts: {
   teamSize: string;
   companyAge: string;
 }): string {
-  return `You are a senior marketing strategist and B2B/B2C growth advisor hired by the company described below. ULTIMATE BUSINESS GOAL of this strategy: generate qualified leads and increase sales for this company - every channel, tactic and KPI must map to lead acquisition, lead conversion or revenue expansion, with a clear offer-led call-to-action. The strategy will also be reused downstream, unchanged, to build the Ideal Customer Profile, the content calendar and the social-media (SMM) strategy. Internal coherence and company-specificity are therefore critical: a reader must be able to identify THIS company and ITS SOLUTION from the strategy alone, without seeing its name.
+  return `You are a senior marketing strategist and B2B/B2C growth advisor hired by the company described below. ULTIMATE BUSINESS GOAL of this strategy: generate qualified leads and increase sales for this company - every channel, tactic and KPI must map to lead acquisition, lead conversion or revenue expansion, with a clear offer-led call-to-action. The strategy will also be reused downstream, unchanged, to build the Ideal Customer Profile, the content calendar and the social-media (SMM) strategy, INCLUDING market sizing (TAM/SAM/SOM) computed from the numbers you output here. Internal coherence and company-specificity are therefore critical: a reader must be able to identify THIS company and ITS SOLUTION from the strategy alone, without seeing its name, and every number you output must be honest about whether it is proven or assumed.
 
 === INPUT 1 - FORM DECLARATIONS (provided by the company itself) ===
 ${opts.formBlock}
@@ -604,7 +684,8 @@ STEP 3 - ICP: derive the target from the intersection of (a) who the sources sho
 STEP 4 - Needs & problems: each need = a job-to-be-done the buyer hires this company for, fulfilled by a NAMED offer; each problem = a cost/pain of the status quo that a NAMED offer removes. No title may appear in both lists. Every entry carries an "anchor": the exact name of the offer/USP/proof point it relies on.
 STEP 5 - Channels & tactics: choose what fits the observed business model and sales cycle (long B2B cycle vs B2C impulse vs SaaS self-serve), the geographic market (local platforms, language, regulation - e.g. in France: OPCO/CPF/Qualiopi logic for vocational training, RGPD for data), and the company's real capacity. Prioritize lead-generation mechanisms: offer-led lead magnets, proof-based outreach, retargeting on high-intent pages.
 STEP 6 - Feasibility check: every tactic must be executable by a team of "${opts.teamSize}" at the "${opts.companyAge}" stage within the timeline, with the declared budget if any. Delete anything a team that size cannot run.
-STEP 7 - Write the final JSON.
+STEP 7 - Grounding pass: for every numeric claim you are about to write into a kpi or a tactic (%, €, count, duration), check whether INPUT 2/3 actually supports that number. If yes, write the supporting quote as its anchor. If no, you may still include a realistic planning assumption, but its anchor MUST be the literal string "estimate" - never leave a number unlabelled.
+STEP 8 - Write the final JSON.
 
 === HARD GROUNDING RULES (violations make the output useless) ===
 R1. SUBSTITUTION TEST: any sentence that would remain true if the company name were replaced by a competitor's name is BANNED ("high-quality solutions", "customer-centric approach", "innovative products", "experienced team"...). Rewrite it with a specific offer name, mechanism, number or proof point from INPUT 2/3.
@@ -613,8 +694,9 @@ R3. ANCHORING: each icp.needs[].fulfillment, each icp.problems[].context and eac
 R4. LISTS MUST NOT OVERLAP: capabilities = what the offer does (features/mechanisms); benefits = what the client gains (outcomes); differentiation = why not a competitor (vs-arguments). No bullet may appear in two lists, and no sentence may be repeated anywhere in the output.
 R5. COMMERCIAL NAMES: offers, programs, certifications and labels keep their exact source wording (do not translate them), even when the rest of the output is in another language.
 R6. CHANNEL FORMAT: each channel string = "Platform (precise use + target segment)", e.g. "LinkedIn (organic + paid, targeting HR directors of 50-500 employee industrial firms)".
-R7. TACTIC FORMAT: each tactic = verb + named offer/asset + target + channel + trigger or timing, and must state the lead-capture mechanism (form, audit, demo, quote, sample, webinar registration...).
-R8. KPI FORMAT: each KPI = "Metric (target: value by <quarter label>)", sized realistically for the team and company age; at least 4 of the 6 KPIs must be lead/revenue metrics (qualified leads, conversion rate, pipeline, CAC, revenue).
+R7. TACTIC FORMAT: each tactic.tactic = verb + named offer/asset + target + channel + trigger or timing, and must state the lead-capture mechanism (form, audit, demo, quote, sample, webinar registration...).
+R8. KPI FORMAT: each kpi.metric = "Metric (target: value by <quarter label>)", sized realistically for the team and company age; at least 4 of the 6 KPIs must be lead/revenue metrics (qualified leads, conversion rate, pipeline, CAC, revenue).
+R8b. GROUNDING OF NUMBERS: every KPI target and every numeric claim inside a tactic (%, €, count, duration) MUST carry an "anchor": a source-tagged verbatim quote from INPUT 2/3 that supports the figure, or the exact string "estimate" when it is a reasonable planning assumption with NO supporting evidence in the inputs. Never omit this field. Downstream systems (including market sizing) will treat "estimate"-tagged figures as non-authoritative and must not chain further arithmetic on them without flagging the result as an estimate too.
 R9. SOURCE PRECEDENCE when inputs conflict: crawl > linkedin > serp > form.
 R10. ${opts.langInstruction}
 
@@ -623,7 +705,7 @@ ${opts.dateLine}
 ${opts.quarterLine}
 
 === OUTPUT ===
-Return ONLY one valid JSON object, no markdown, no code fences, with this EXACT structure (same keys as the current production schema, plus siteAnalysis and anchors):
+Return ONLY one valid JSON object, no markdown, no code fences, with this EXACT structure (same keys as the current production schema, plus siteAnalysis, anchors, and anchored kpis/tactics):
 {
   "siteAnalysis": {
     "positioning": "1-sentence positioning: For [target] who [need], unlike [alternative], [company] [unique mechanism/proof]",
@@ -663,8 +745,12 @@ Return ONLY one valid JSON object, no markdown, no code fences, with this EXACT 
     "primary": ["4 primary channels, format R6"],
     "secondary": ["4 secondary channels, format R6"]
   },
-  "tactics": ["6 tactics, format R7, each anchored to a real offer/USP"],
-  "kpis": ["6 KPIs, format R8"],
+  "tactics": [
+    { "tactic": "6 tactics total, format R7, each anchored to a real offer/USP", "anchor": "source-tagged quote or 'estimate', per R8b" }
+  ],
+  "kpis": [
+    { "metric": "6 KPIs total, format R8", "anchor": "source-tagged quote or 'estimate', per R8b" }
+  ],
   "timeline": "phased timeline using ${opts.q.q1}, ${opts.q.q2}, ${opts.q.q3}, ${opts.q.q4} as quarter labels. Example: '${opts.q.q1} (Months 1-3): [action]. ${opts.q.q2} (Months 4-6): [action]. ${opts.q.q3} (Months 7-9): [action]. Full optimization by ${opts.q.q4}.'"
 }
 Return ONLY the JSON object.`;
@@ -678,6 +764,63 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
+
+  // -------------------------------------------------------------------------
+  // v2.3: quota guard, BEFORE any paid work (crawl / SerpApi / Apify / DeepSeek).
+  // This endpoint stays PUBLIC (the /strategy free-trial flow has no login) — it never
+  // hard-rejects on a missing token. A real user session, when present, is identified and
+  // gets the higher DAILY_GENERATION_QUOTA; anonymous callers are rate-limited by IP at the
+  // much lower ANONYMOUS_DAILY_QUOTA instead. Requires SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+  // (auto-injected) — if either is missing, this guard is skipped entirely (dev/local
+  // convenience only; both are present by default on Supabase, so this should never happen
+  // in production).
+  // -------------------------------------------------------------------------
+  const authHeader = req.headers.get("Authorization") || "";
+  const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const supabaseAdmin = supabaseUrl && serviceRoleKey ? createClient(supabaseUrl, serviceRoleKey) : null;
+
+  if (supabaseAdmin) {
+    let subject: string | null = null;
+    if (jwt) {
+      const { data: userData } = await supabaseAdmin.auth.getUser(jwt);
+      if (userData?.user) subject = "user:" + userData.user.id;
+    }
+    if (!subject) {
+      const ip = (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() || "unknown";
+      subject = "ip:" + ip;
+    }
+    const dailyLimit = subject.startsWith("user:") ? DAILY_GENERATION_QUOTA : ANONYMOUS_DAILY_QUOTA;
+
+    // Fails OPEN (allows the request) if the table isn't set up yet or the query errors, so
+    // a missing migration never turns into a hard outage on the public trial flow.
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: quotaRow, error: quotaErr } = await supabaseAdmin
+        .from("generation_quota")
+        .select("count")
+        .eq("subject", subject)
+        .eq("day", today)
+        .maybeSingle();
+      if (!quotaErr) {
+        const current = quotaRow?.count ?? 0;
+        if (current >= dailyLimit) {
+          return new Response(JSON.stringify({ error: "Daily generation quota exceeded" }),
+            { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        await supabaseAdmin
+          .from("generation_quota")
+          .upsert({ subject, day: today, count: current + 1 }, { onConflict: "subject,day" });
+      }
+    } catch (quotaEx) {
+      console.warn("generation_quota check skipped:", quotaEx);
+    }
+  } else {
+    console.warn("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set — quota guard disabled.");
+  }
+  // --- end v2.3 quota guard ---
 
   try {
     const body: StrategyRequest = await req.json();
@@ -764,7 +907,15 @@ Deno.serve(async (req: Request) => {
 
     let linkedin: { text: string; runId: string } | null = null;
     if (apifyKey && linkedinUrl) {
-      linkedin = await apifyLinkedInCompany(linkedinUrl, apifyKey);
+      // Hard budget so a slow Apify run can never blow the request's own latency/timeout
+      // (this matters most during a live demo). If it times out, the Apify run keeps going
+      // server-side but its result is discarded here — there's no cache to persist it to
+      // (v2.2's strategy_cache was removed, see header). If you want that enrichment reused
+      // later, wire it into wherever `businesses`/`marketing_strategies` already store data
+      // for this domain, via EdgeRuntime.waitUntil.
+      const linkedinPromise = apifyLinkedInCompany(linkedinUrl, apifyKey).catch(() => null);
+      const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), LINKEDIN_TIMEOUT_MS));
+      linkedin = await Promise.race([linkedinPromise, timeoutPromise]);
     }
     const linkedinDossier = linkedin ? linkedin.text : "(LinkedIn company page unavailable)";
 
@@ -833,7 +984,8 @@ Deno.serve(async (req: Request) => {
 
     let strategy: any = null;
     let validation: string[] = [];
-    let raw = await callDeepSeek([{ role: "user", content: strategyPrompt }], { temperature: 0.6, maxTokens: 8000 });
+    // v2.2: temperature lowered from 0.6 to 0.3 — this call must stay evidence-bound.
+    let raw = await callDeepSeek([{ role: "user", content: strategyPrompt }], { temperature: 0.3, maxTokens: 8000 });
     strategy = extractJsonObject(raw);
     if (strategy) validation = validateStrategy(strategy);
 
@@ -849,7 +1001,7 @@ Deno.serve(async (req: Request) => {
               : "Your previous answer was not valid JSON. Return ONLY the complete JSON object requested, no markdown, no code fences.",
           },
         ],
-        { temperature: 0.4, maxTokens: 8000 },
+        { temperature: 0.3, maxTokens: 8000 }, // v2.2: was 0.4
       );
       const fixed = extractJsonObject(fix);
       if (fixed) {
@@ -862,22 +1014,24 @@ Deno.serve(async (req: Request) => {
     }
     if (!strategy) throw new Error("Failed to parse AI response as JSON");
 
-    return new Response(
-      JSON.stringify({
-        ...strategy,
-        _meta: {
-          crawledPages: crawl.pages.map((p) => p.url),
-          serpQueries: serpResults.map((s) => s.query),
-          linkedinUrl,
-          apifyRunId: linkedin?.runId ?? null,
-          siteDataConfidence: analysis.confidence ?? (hasSiteData ? "medium" : "low"),
-          dataSourcesUsed: analysis.dataSourcesUsed ?? [],
-          validationWarnings: validation,
-          generatedAt: new Date().toISOString(),
-        },
-      }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    const estimatedClaims = scanEstimatedClaims(strategy); // v2.2
+
+    const responsePayload = {
+      ...strategy,
+      _meta: {
+        crawledPages: crawl.pages.map((p) => p.url),
+        serpQueries: serpResults.map((s) => s.query),
+        linkedinUrl,
+        apifyRunId: linkedin?.runId ?? null,
+        siteDataConfidence: analysis.confidence ?? (hasSiteData ? "medium" : "low"),
+        dataSourcesUsed: analysis.dataSourcesUsed ?? [],
+        validationWarnings: validation,
+        estimatedClaims, // KPIs/tactics whose numbers are planning assumptions, not sourced facts
+        generatedAt: new Date().toISOString(),
+      },
+    };
+
+    return new Response(JSON.stringify(responsePayload), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (error) {
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
