@@ -37,9 +37,17 @@ interface Strategy {
     primary: string[];
     secondary: string[];
   };
-  tactics: string[];
-  kpis: string[];
+  tactics: (string | { tactic: string; anchor?: string })[];
+  kpis: (string | { metric: string; anchor?: string })[];
   timeline: string;
+}
+
+function itemText(item: string | { tactic?: string; metric?: string; anchor?: string }): string {
+  return typeof item === 'string' ? item : (item.tactic ?? item.metric ?? '');
+}
+
+function isEstimate(item: string | { anchor?: string }): boolean {
+  return typeof item !== 'string' && item.anchor?.trim().toLowerCase() === 'estimate';
 }
 
 interface SavedStrategyRow {
@@ -175,10 +183,10 @@ export function SavedStrategyPage() {
     addText(strategy.channels?.secondary?.join('  |  ') ?? '', margin + 4, 10, 'normal', [75, 85, 99]);
 
     addSectionTitle('Marketing Tactics');
-    strategy.tactics?.forEach((t, idx) => addText(`${idx + 1}. ${t}`, margin + 2, 10, 'normal', [55, 65, 81]));
+    strategy.tactics?.forEach((t, idx) => addText(`${idx + 1}. ${itemText(t)}`, margin + 2, 10, 'normal', [55, 65, 81]));
 
     addSectionTitle('Key Performance Indicators');
-    strategy.kpis?.forEach(kpi => addText(`  -  ${kpi}`, margin + 2, 10, 'normal', [75, 85, 99]));
+    strategy.kpis?.forEach(kpi => addText(`  -  ${itemText(kpi)}${isEstimate(kpi) ? '  (estimate)' : ''}`, margin + 2, 10, 'normal', [75, 85, 99]));
 
     addSectionTitle('Timeline');
     addText(strategy.timeline ?? '', margin + 4, 10, 'normal', [37, 99, 235]);
@@ -473,7 +481,12 @@ export function SavedStrategyPage() {
               <div key={idx} className="p-4 bg-gradient-to-br from-blue-50 to-gray-50 rounded-lg border border-blue-100">
                 <div className="flex gap-3">
                   <span className="text-blue-600 font-bold text-lg flex-shrink-0">{idx + 1}</span>
-                  <p className="text-gray-700">{tactic}</p>
+                  <p className="text-gray-700">
+                    {itemText(tactic)}
+                    {isEstimate(tactic) && (
+                      <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
+                    )}
+                  </p>
                 </div>
               </div>
             ))}
@@ -488,7 +501,12 @@ export function SavedStrategyPage() {
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {strategy.kpis.map((kpi, idx) => (
               <div key={idx} className="p-4 bg-gradient-to-br from-green-50 to-gray-50 rounded-lg border border-green-100">
-                <p className="text-gray-700 text-sm">{kpi}</p>
+                <p className="text-gray-700 text-sm">
+                  {itemText(kpi)}
+                  {isEstimate(kpi) && (
+                    <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
+                  )}
+                </p>
               </div>
             ))}
           </div>
