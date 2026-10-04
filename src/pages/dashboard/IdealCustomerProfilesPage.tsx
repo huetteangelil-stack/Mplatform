@@ -25,8 +25,8 @@ interface IcpData {
 interface StrategyData {
   icp?: IcpData;
   channels?: { primary?: string[]; secondary?: string[] };
-  tactics?: string[];
-  kpis?: string[];
+  tactics?: (string | { tactic: string; anchor?: string })[];
+  kpis?: (string | { metric: string; anchor?: string })[];
   timeline?: string;
 }
 
@@ -118,10 +118,15 @@ export function IdealCustomerProfilesPage() {
     setIsGenerating(true);
     setError('');
     try {
+      // v2.3: this page only renders inside the authenticated dashboard, so a session is
+      // always expected here.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Session expirée, veuillez vous reconnecter.');
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-content`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          Authorization: `Bearer ${session.access_token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ mode: 'icp_insights', strategy: selectedStrategy.strategy_data }),
