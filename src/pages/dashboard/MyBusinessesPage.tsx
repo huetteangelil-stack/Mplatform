@@ -93,8 +93,8 @@ export function MyBusinessesPage() {
   };
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-5 sm:p-8">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 sm:mb-8">
         <h1 className="text-2xl font-bold text-gray-900">{t('biz.title')}</h1>
         <button onClick={openAdd} className="flex items-center gap-2 px-4 py-2.5 bg-green-500 hover:bg-green-600 text-white text-sm font-semibold rounded-xl transition-colors">
           <Plus size={18} />
@@ -113,7 +113,7 @@ export function MyBusinessesPage() {
           <p className="text-sm mt-1">{t('biz.noneHint')}</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
           {businesses.map(b => (
             <div key={b.id} className="bg-white rounded-2xl border border-gray-200 overflow-hidden hover:shadow-md transition-shadow group relative">
               <div className="h-32 bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center">
@@ -163,7 +163,7 @@ export function MyBusinessesPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">{t('biz.website')}</label>
                 <input value={form.website} onChange={e => setForm(p => ({ ...p, website: e.target.value }))} placeholder="algos-ai.com" className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">{t('biz.model')}</label>
                   <select value={form.business_model} onChange={e => setForm(p => ({ ...p, business_model: e.target.value }))} className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">

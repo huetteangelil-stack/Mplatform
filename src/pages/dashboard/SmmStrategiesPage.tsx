@@ -249,7 +249,7 @@ export function SmmStrategiesPage() {
                               <PersonaList title="KPIs" items={persona.kpis} color="text-blue-600" />
                               <PersonaList title="Responsibilities" items={persona.responsibilities} color="text-gray-600" />
                             </div>
-                            <div className="flex gap-6 text-sm">
+                            <div className="flex flex-col sm:flex-row gap-1 sm:gap-6 text-sm">
                               <div><span className="text-gray-400">Reports to: </span><span className="text-gray-700 font-medium">{persona.reportingTo}</span></div>
                               <div><span className="text-gray-400">Buying role: </span><span className="text-gray-700 font-medium">{persona.buyingRole}</span></div>
                             </div>
@@ -303,11 +303,11 @@ function MarketCard({ layer, label, title, color, icon }: { layer: MarketLayer; 
     <div className={`rounded-2xl border ${c.border} ${c.card} p-5 sm:p-6`}>
       <div className="flex items-center gap-3 mb-3">
         <span className={`w-8 h-8 rounded-lg ${c.badge} text-white flex items-center justify-center flex-shrink-0`}>{icon}</span>
-        <div>
+        <div className="min-w-0">
           <p className={`text-xs font-bold ${c.text}`}>{label}</p>
-          <h3 className="font-bold text-gray-900 text-base">{title}</h3>
+          <h3 className="font-bold text-gray-900 text-sm sm:text-base">{title}</h3>
         </div>
-        <span className={`ml-auto text-lg font-bold ${c.text}`}>{formatNumber(layer.marketValue)}</span>
+        <span className={`ml-auto text-base sm:text-lg font-bold ${c.text} whitespace-nowrap`}>{formatNumber(layer.marketValue)}</span>
       </div>
       <p className="text-sm text-gray-700 leading-relaxed mb-4">{layer.description}</p>
       {layer.basedOnEstimates && (
@@ -315,18 +315,18 @@ function MarketCard({ layer, label, title, color, icon }: { layer: MarketLayer; 
           Basé en partie sur des estimations non vérifiées
         </p>
       )}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 gap-2 sm:gap-4">
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Potential customers</p>
-          <p className="text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.potentialCustomers)}</p>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Potential</p>
+          <p className="text-xs sm:text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.potentialCustomers)}</p>
         </div>
         <div>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">ACV</p>
-          <p className="text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.acv)}</p>
+          <p className="text-xs sm:text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.acv)}</p>
         </div>
         <div>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Market value</p>
-          <p className="text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.marketValue)}</p>
+          <p className="text-xs sm:text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.marketValue)}</p>
         </div>
       </div>
       {layer.contributions && layer.contributions.length > 0 && (

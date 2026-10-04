@@ -204,7 +204,7 @@ export function SavedStrategyPage() {
 
   if (error || !row) {
     return (
-      <div className="p-8">
+      <div className="p-5 sm:p-8">
         <button onClick={() => navigate('/dashboard/strategies')} className="flex items-center gap-2 text-gray-600 hover:text-blue-600 transition-colors font-medium mb-8">
           <ArrowLeft size={20} /> Back to strategies
         </button>

@@ -405,7 +405,7 @@ export function ContentCreationPage() {
         )}
 
         {generatingDrafts && (
-          <div className="bg-white rounded-2xl shadow-sm p-8 mb-6">
+          <div className="bg-white rounded-2xl shadow-sm p-5 sm:p-8 mb-6">
             <div className="flex flex-col items-center justify-center text-center py-8">
               <div className="flex items-center gap-3 mb-4">
                 <div className="w-10 h-10 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
@@ -462,7 +462,7 @@ export function ContentCreationPage() {
         )}
 
         {generatingHooks && (
-          <div className="bg-white rounded-2xl shadow-sm p-8 mb-6">
+          <div className="bg-white rounded-2xl shadow-sm p-5 sm:p-8 mb-6">
             <div className="flex flex-col items-center justify-center text-center py-8">
               <div className="w-10 h-10 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4" />
               <p className="text-base font-semibold text-gray-800">Elsa is generating hooks for your draft...</p>
@@ -491,18 +491,18 @@ export function ContentCreationPage() {
 
   // ─── Default list view ───
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-1">
-        <h1 className="text-2xl font-bold text-gray-900">Content creation</h1>
+    <div className="p-5 sm:p-8">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0 mb-1">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Content creation</h1>
         <button
           onClick={() => { setError(''); setShowModal(true); }}
-          className="flex items-center gap-2 px-4 py-2.5 bg-green-500 hover:bg-green-600 text-white text-sm font-semibold rounded-xl transition-colors"
+          className="flex items-center gap-2 px-4 py-2.5 bg-green-500 hover:bg-green-600 text-white text-sm font-semibold rounded-xl transition-colors w-full sm:w-auto justify-center"
         >
           <Plus size={18} />
           Create content
         </button>
       </div>
-      <p className="text-sm text-gray-400 mb-8">
+      <p className="text-sm text-gray-400 mb-6 sm:mb-8">
         Create LinkedIn and Facebook posts based on your marketing strategy.
       </p>
 
@@ -517,7 +517,8 @@ export function ContentCreationPage() {
         </div>
       ) : (
         <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
-          <div className="grid grid-cols-12 gap-4 px-6 py-3 border-b border-gray-100 bg-gray-50">
+          {/* Desktop table header — hidden on mobile */}
+          <div className="hidden sm:grid grid-cols-12 gap-4 px-6 py-3 border-b border-gray-100 bg-gray-50">
             <span className="col-span-4 text-xs font-semibold text-gray-400 uppercase tracking-wide">Task name</span>
             <span className="col-span-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Business</span>
             <span className="col-span-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">Status</span>
@@ -531,28 +532,28 @@ export function ContentCreationPage() {
                 <div
                   key={task.id}
                   onClick={() => openTask(task)}
-                  className="grid grid-cols-12 gap-4 px-6 py-4 items-center hover:bg-blue-50/40 transition-colors cursor-pointer group"
+                  className="grid grid-cols-12 gap-2 sm:gap-4 px-4 sm:px-6 py-3 sm:py-4 items-center hover:bg-blue-50/40 transition-colors cursor-pointer group"
                 >
-                  <div className="col-span-4">
+                  <div className="col-span-12 sm:col-span-4">
                     <p className="font-medium text-gray-900 text-sm truncate">{task.task_name}</p>
                     {task.topic && <p className="text-xs text-gray-400 truncate mt-0.5">{task.topic}</p>}
                   </div>
-                  <div className="col-span-3">
+                  <div className="col-span-6 sm:col-span-3">
                     <p className="text-sm text-gray-500 truncate">{getBusinessName(task.business_id)}</p>
                   </div>
-                  <div className="col-span-2">
+                  <div className="col-span-3 sm:col-span-2">
                     <span className={`inline-block px-2 py-1 rounded-full text-xs font-semibold ${status.className}`}>
                       {status.label}
                     </span>
                   </div>
-                  <div className="col-span-2">
+                  <div className="col-span-3 sm:col-span-2">
                     <p className="text-xs text-gray-400">{formatDate(task.created_at)}</p>
                   </div>
-                  <div className="col-span-1 flex justify-end items-center gap-1">
+                  <div className="col-span-12 sm:col-span-1 flex justify-end items-center gap-1">
                     {task.status === 'done' && (
                       <button
                         onClick={(e) => { e.stopPropagation(); openSavedContent(task); }}
-                        className="p-1.5 hover:bg-amber-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                        className="p-1.5 hover:bg-amber-50 rounded-lg transition-colors sm:opacity-0 sm:group-hover:opacity-100"
                         title="View saved content"
                       >
                         <Lightbulb size={14} className="text-amber-500" />
@@ -560,7 +561,7 @@ export function ContentCreationPage() {
                     )}
                     <button
                       onClick={(e) => { e.stopPropagation(); handleDelete(task.id); }}
-                      className="p-1.5 hover:bg-red-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                      className="p-1.5 hover:bg-red-50 rounded-lg transition-colors sm:opacity-0 sm:group-hover:opacity-100"
                     >
                       <Trash2 size={14} className="text-red-400" />
                     </button>

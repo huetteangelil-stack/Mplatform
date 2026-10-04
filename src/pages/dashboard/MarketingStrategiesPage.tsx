@@ -49,10 +49,10 @@ export function MarketingStrategiesPage() {
   };
 
   return (
-    <div className="p-8">
+    <div className="p-5 sm:p-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-2">
-        <h1 className="text-2xl font-bold text-gray-900">Marketing strategies</h1>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-2">
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Marketing strategies</h1>
         <button
           onClick={() => navigate('/strategy')}
           className="flex items-center gap-2 px-4 py-2.5 bg-green-500 hover:bg-green-600 text-white text-sm font-semibold rounded-xl transition-colors"
@@ -96,7 +96,7 @@ export function MarketingStrategiesPage() {
               className="bg-white rounded-2xl border border-gray-200 overflow-hidden hover:shadow-md transition-shadow cursor-pointer"
             >
               {/* Card header */}
-              <div className="flex items-center justify-between px-6 py-4">
+              <div className="flex items-center justify-between px-4 sm:px-6 py-4">
                 <div className="flex items-center gap-4 min-w-0">
                   <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0">
                     <Lightbulb size={18} className="text-blue-600" />

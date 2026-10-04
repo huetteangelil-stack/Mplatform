@@ -359,10 +359,10 @@ export function StrategyResultPage() {
           <div className="flex gap-6 lg:gap-8 items-start">
           {/* ─── Main content ─── */}
           <div className="flex-1 min-w-0 space-y-8">
-            <div className="bg-white rounded-3xl shadow-xl p-8 sm:p-12 sticky top-4 z-10">
+            <div className="bg-white rounded-3xl shadow-xl p-5 sm:p-8 lg:p-12 sticky top-4 z-10">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div>
-                  <h1 className="text-4xl font-bold text-gray-900">
+                  <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900">
                     Marketing Strategy for {formData.businessName}
                   </h1>
                   <p className="text-gray-600 mt-2">AI-Generated Ideal Customer Profile & Go-to-Market Plan</p>
@@ -408,12 +408,12 @@ export function StrategyResultPage() {
 
             {/* Compartment 1 — Description */}
             {strategy.icp.description && (
-              <div className="bg-white rounded-2xl shadow-lg p-8">
+              <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0">
                     <span className="text-blue-600 font-bold text-xs">DESC</span>
                   </div>
-                  <h2 className="text-2xl font-bold text-gray-900">Description</h2>
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Description</h2>
                 </div>
 
                 <div className="space-y-6">
@@ -483,12 +483,12 @@ export function StrategyResultPage() {
 
             {/* Compartment 2 — Needs */}
             {strategy.icp.needs?.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-lg p-8">
+              <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center flex-shrink-0">
                     <span className="text-green-600 font-bold text-xs">NEED</span>
                   </div>
-                  <h2 className="text-2xl font-bold text-gray-900">Needs your product potentially satisfies</h2>
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Needs your product potentially satisfies</h2>
                 </div>
                 <div className="grid md:grid-cols-2 gap-4">
                   {strategy.icp.needs.map((need, idx) => (
@@ -511,12 +511,12 @@ export function StrategyResultPage() {
 
             {/* Compartment 3 — Problems */}
             {strategy.icp.problems?.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-lg p-8">
+              <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center flex-shrink-0">
                     <span className="text-orange-600 font-bold text-xs">PROB</span>
                   </div>
-                  <h2 className="text-2xl font-bold text-gray-900">Problems your product potentially solves</h2>
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Problems your product potentially solves</h2>
                 </div>
                 <div className="grid md:grid-cols-2 gap-4">
                   {strategy.icp.problems.map((problem, idx) => (
@@ -537,9 +537,9 @@ export function StrategyResultPage() {
               </div>
             )}
 
-            <div className="grid lg:grid-cols-2 gap-8">
-              <div className="bg-white rounded-2xl shadow-lg p-8">
-                <h2 className="text-2xl font-bold text-gray-900 mb-6">Ideal Customer Profile</h2>
+            <div className="grid lg:grid-cols-2 gap-6 sm:gap-8">
+              <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
+                <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">Ideal Customer Profile</h2>
 
                 <div className="space-y-6">
                   <div>
@@ -579,8 +579,8 @@ export function StrategyResultPage() {
               </div>
 
               <div className="space-y-8">
-                <div className="bg-white rounded-2xl shadow-lg p-8">
-                  <h2 className="text-2xl font-bold text-gray-900 mb-6">Marketing Channels</h2>
+                <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">Marketing Channels</h2>
 
                   <div className="space-y-6">
                     <div>
@@ -613,8 +613,8 @@ export function StrategyResultPage() {
                   </div>
                 </div>
 
-                <div className="bg-white rounded-2xl shadow-lg p-8">
-                  <h2 className="text-2xl font-bold text-gray-900 mb-4">Timeline</h2>
+                <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4">Timeline</h2>
                   <p className="text-gray-600 leading-relaxed bg-blue-50 p-4 rounded-lg border-l-4 border-blue-600">
                     {strategy.timeline}
                   </p>
@@ -622,8 +622,8 @@ export function StrategyResultPage() {
               </div>
             </div>
 
-            <div className="bg-white rounded-2xl shadow-lg p-8">
-              <h2 className="text-2xl font-bold text-gray-900 mb-6">Marketing Tactics</h2>
+            <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">Marketing Tactics</h2>
               <div className="grid md:grid-cols-2 gap-4">
                 {strategy.tactics.map((tactic, idx) => (
                   <div
@@ -644,8 +644,8 @@ export function StrategyResultPage() {
               </div>
             </div>
 
-            <div className="bg-white rounded-2xl shadow-lg p-8">
-              <h2 className="text-2xl font-bold text-gray-900 mb-6">Key Performance Indicators</h2>
+            <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">Key Performance Indicators</h2>
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {strategy.kpis.map((kpi, idx) => (
                   <div
@@ -663,8 +663,8 @@ export function StrategyResultPage() {
               </div>
             </div>
 
-            <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl shadow-xl p-8 text-white text-center">
-              <h2 className="text-2xl font-bold mb-4">Ready to implement this strategy?</h2>
+            <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl shadow-xl p-5 sm:p-8 text-white text-center">
+              <h2 className="text-xl sm:text-2xl font-bold mb-4">Ready to implement this strategy?</h2>
               <p className="text-blue-100 mb-6 max-w-2xl mx-auto">
                 Unlock our premium plan to get AI-assisted implementation guides, content templates, and campaign management tools.
               </p>

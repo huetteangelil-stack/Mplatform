@@ -13,15 +13,15 @@ export function DashboardHomePage() {
   ];
 
   return (
-    <div className="p-8">
-      <h1 className="text-2xl font-bold text-gray-900 mb-1">{t('dashHome.title')}</h1>
+    <div className="p-5 sm:p-8">
+      <h1 className="text-xl sm:text-2xl font-bold text-gray-900 mb-1">{t('dashHome.title')}</h1>
       <p className="text-gray-400 text-sm mb-10">{t('dashHome.subtitle')}</p>
 
       <div className="max-w-2xl space-y-4">
         {steps.map(({ icon: Icon, title, description, cta, to, color }, idx) => (
-          <div key={idx} className="bg-white rounded-2xl border border-gray-200 p-5 flex items-center gap-5 hover:shadow-sm transition-shadow">
-            <div className={'w-12 h-12 rounded-xl ' + color + ' flex items-center justify-center flex-shrink-0'}>
-              <Icon size={22} />
+          <div key={idx} className="bg-white rounded-2xl border border-gray-200 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5 hover:shadow-sm transition-shadow">
+            <div className={'w-10 h-10 sm:w-12 sm:h-12 rounded-xl ' + color + ' flex items-center justify-center flex-shrink-0'}>
+              <Icon size={20} />
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-0.5">
@@ -32,7 +32,7 @@ export function DashboardHomePage() {
               </div>
               <p className="text-gray-500 text-xs ml-7">{description}</p>
             </div>
-            <button onClick={() => navigate(to)} className="flex items-center gap-1.5 px-4 py-2 bg-gray-900 hover:bg-gray-700 text-white text-xs font-semibold rounded-lg transition-colors flex-shrink-0">
+            <button onClick={() => navigate(to)} className="flex items-center justify-center gap-1.5 px-4 py-2 bg-gray-900 hover:bg-gray-700 text-white text-xs font-semibold rounded-lg transition-colors flex-shrink-0 w-full sm:w-auto">
               {cta}
               <ArrowRight size={14} />
             </button>
