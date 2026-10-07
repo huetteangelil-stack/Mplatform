@@ -2,12 +2,30 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 /**
- * generate-strategy — v2.3 (grounding + anonymous-aware security + reliability hardening)
+ * generate-strategy — v2.4 (prospecting kit replaces KPIs + anonymous-aware security)
  * ---------------------------------------------------------------------------------------
- * v2.3 revises v2.2 after checking the actual app: /strategy (StrategyPage.tsx →
+ * v2.4 change: the "kpis" field is REMOVED and replaced by "prospectingKit" — a
+ * ready-to-use prospecting kit instead of abstract targets:
+ *   - prospectJobTitle / prospectJobTitleRationale: ONE precise job title to call first
+ *     (e.g. "DAF", "COO"), grounded in the ICP, not a generic list of titles.
+ *   - callValueProposition: a SINGLE fluid spoken paragraph (no bullets) sayable out loud
+ *     in ~20-30s — the value proposition for a cold call.
+ *   - emailIcebreakerSubject / emailIcebreakerOpening: a cold-email subject and opening
+ *     line referencing something concrete about the target company, not a generic line.
+ *   - callValuePropositionAnchor / emailIcebreakerAnchor: same anchor convention as
+ *     tactics — a source-tagged quote, or the literal string "estimate".
+ *
+ * Cross-file consequence (handled): generate-content.ts's smm_strategy mode used to read
+ * BOTH kpis[] and tactics[] to build its "sourced facts vs estimates" grounding block for
+ * market sizing. Since kpis[] no longer exists, generate-content.ts v1.2 now reads only
+ * tactics[] for that purpose — see its own header for the matching change. Market-sizing
+ * grounding is slightly thinner as a result (one fewer source of anchored figures); tactics
+ * alone still carries real signal since each one is anchored the same way KPIs were.
+ *
+ * v2.3 revised v2.2 after checking the actual app: /strategy (StrategyPage.tsx →
  * StrategyResultPage.tsx) is an intentionally public, no-login entry point (the free-trial
  * hook), and generate-strategy is only ever called once per business — there is no
- * "regenerate" UI for it anywhere in the app. Two v2.2 items are changed accordingly:
+ * "regenerate" UI for it anywhere in the app. Two v2.2 items were changed accordingly:
  *
  *  3'. SECURITY (revised): the endpoint stays PUBLIC — it no longer hard-rejects requests
  *     without a session. If a valid user JWT is present (Authorization: Bearer <token>), the
@@ -21,12 +39,12 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  *     area; reintroduce it if a "regenerate" flow is built later.
  *
  * Unchanged from v2.2:
- *  1. GROUNDING (root-cause fix): kpis[] and tactics[] are objects { metric|tactic, anchor }.
- *     "anchor" is a source-tagged verbatim quote or the literal string "estimate". Stops
- *     fabricated numbers (e.g. "120 leads/quarter") from silently feeding downstream
- *     market-sizing (TAM/SAM/SOM) as if they were facts.
+ *  1. GROUNDING (root-cause fix): tactics[] are objects { tactic, anchor }. "anchor" is a
+ *     source-tagged verbatim quote or the literal string "estimate". Stops fabricated
+ *     numbers (e.g. "120 leads/quarter") from silently feeding downstream market-sizing
+ *     (TAM/SAM/SOM) as if they were facts.
  *  2. VALIDATION: validateStrategy() enforces the anchor field structurally; scanEstimatedClaims()
- *     lists every "estimate"-tagged KPI/tactic in _meta.estimatedClaims.
+ *     lists every "estimate"-tagged tactic/prospectingKit figure in _meta.estimatedClaims.
  *  4. RELIABILITY: LinkedIn/Apify enrichment has a hard budget (LINKEDIN_TIMEOUT_MS) on the
  *     request's critical path, so a slow Apify run can never cause a timeout during a live demo.
  *  6. TUNING: strategy-generation temperature lowered from 0.6 to 0.3.
@@ -56,8 +74,8 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  *           (Apify run can take up to ~100 s server-side; the request itself now never waits
  *           more than LINKEDIN_TIMEOUT_MS for it).
  *
- * Output JSON schema = v2.1 schema, with kpis/tactics now object arrays (see point 1) and an
- * extended _meta (estimatedClaims).
+ * Output JSON schema = v2.1 schema, with tactics as anchored object arrays, kpis replaced by
+ * prospectingKit (see above), and an extended _meta (estimatedClaims).
  */
 
 const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || "*"; // v2.2: set this in production instead of "*"
@@ -535,7 +553,7 @@ function extractJsonObject(content: string): unknown | null {
   return null;
 }
 
-// v2.2: enforces { textField, anchor } shape on kpis/tactics instead of plain strings
+// enforces { textField, anchor } shape on tactics instead of plain strings
 function reqAnchoredArray(path: string, arr: any, min: number, textField: string, problems: string[]) {
   if (!Array.isArray(arr) || arr.length < min) {
     problems.push(path + " (array >= " + min + ")");
@@ -577,27 +595,42 @@ function validateStrategy(s: any): string[] {
   reqArr("icp.goals", s.icp?.goals, 4);
   reqArr("channels.primary", s.channels?.primary, 4);
   reqArr("channels.secondary", s.channels?.secondary, 4);
-  reqAnchoredArray("tactics", s.tactics, 6, "tactic", problems); // v2.2: was reqArr("tactics", s.tactics, 6)
-  reqAnchoredArray("kpis", s.kpis, 6, "metric", problems); // v2.2: was reqArr("kpis", s.kpis, 6)
+  reqAnchoredArray("tactics", s.tactics, 6, "tactic", problems); // was reqArr("tactics", s.tactics, 6)
+  // v2.4: kpis[] removed, replaced by prospectingKit (see header).
+  reqStr("prospectingKit.prospectJobTitle", s.prospectingKit?.prospectJobTitle);
+  reqStr("prospectingKit.prospectJobTitleRationale", s.prospectingKit?.prospectJobTitleRationale);
+  if (typeof s.prospectingKit?.callValueProposition !== "string" || s.prospectingKit.callValueProposition.trim().length < 40) {
+    problems.push("prospectingKit.callValueProposition");
+  }
+  if (/[\n•\-]\s/.test(s.prospectingKit?.callValueProposition ?? "")) {
+    problems.push("prospectingKit.callValueProposition (must be one fluid paragraph, no bullets/line breaks)");
+  }
+  reqStr("prospectingKit.emailIcebreakerSubject", s.prospectingKit?.emailIcebreakerSubject);
+  reqStr("prospectingKit.emailIcebreakerOpening", s.prospectingKit?.emailIcebreakerOpening);
   reqStr("timeline", s.timeline);
   return problems;
 }
 
-// v2.2: surfaces every KPI/tactic explicitly tagged "estimate" so the UI can flag it as
-// unverified instead of presenting it as a fact (this is what feeds downstream TAM/SAM/SOM).
+// v2.4: surfaces every tactic/prospectingKit figure explicitly tagged "estimate" so the UI
+// can flag it as unverified instead of presenting it as a fact (tactics feed downstream
+// TAM/SAM/SOM in generate-content.ts; the prospecting kit is shown directly to the user).
 function scanEstimatedClaims(s: any): string[] {
   const flags: string[] = [];
-  const check = (arr: any[], label: string, textField: string) => {
-    (arr ?? []).forEach((item: any, i: number) => {
-      const anchor = typeof item === "object" ? item.anchor : undefined;
-      if (typeof anchor === "string" && anchor.trim().toLowerCase() === "estimate") {
-        const text = typeof item === "object" ? item[textField] : String(item);
-        flags.push(label + "[" + i + "]: " + text);
-      }
-    });
-  };
-  check(s?.kpis, "kpis", "metric");
-  check(s?.tactics, "tactics", "tactic");
+  (s?.tactics ?? []).forEach((item: any, i: number) => {
+    const anchor = typeof item === "object" ? item.anchor : undefined;
+    if (typeof anchor === "string" && anchor.trim().toLowerCase() === "estimate") {
+      flags.push("tactics[" + i + "]: " + (typeof item === "object" ? item.tactic : String(item)));
+    }
+  });
+  const pk = s?.prospectingKit;
+  if (pk) {
+    if (typeof pk.callValuePropositionAnchor === "string" && pk.callValuePropositionAnchor.trim().toLowerCase() === "estimate") {
+      flags.push("prospectingKit.callValueProposition: " + pk.callValueProposition);
+    }
+    if (typeof pk.emailIcebreakerAnchor === "string" && pk.emailIcebreakerAnchor.trim().toLowerCase() === "estimate") {
+      flags.push("prospectingKit.emailIcebreakerOpening: " + pk.emailIcebreakerOpening);
+    }
+  }
   return flags;
 }
 
@@ -665,7 +698,7 @@ function buildStrategyPrompt(opts: {
   teamSize: string;
   companyAge: string;
 }): string {
-  return `You are a senior marketing strategist and B2B/B2C growth advisor hired by the company described below. ULTIMATE BUSINESS GOAL of this strategy: generate qualified leads and increase sales for this company - every channel, tactic and KPI must map to lead acquisition, lead conversion or revenue expansion, with a clear offer-led call-to-action. The strategy will also be reused downstream, unchanged, to build the Ideal Customer Profile, the content calendar and the social-media (SMM) strategy, INCLUDING market sizing (TAM/SAM/SOM) computed from the numbers you output here. Internal coherence and company-specificity are therefore critical: a reader must be able to identify THIS company and ITS SOLUTION from the strategy alone, without seeing its name, and every number you output must be honest about whether it is proven or assumed.
+  return `You are a senior marketing strategist and B2B/B2C growth advisor hired by the company described below. ULTIMATE BUSINESS GOAL of this strategy: generate qualified leads and increase sales for this company - every channel and tactic must map to lead acquisition, lead conversion or revenue expansion, and the prospecting kit must be immediately usable on a real cold call or cold email, with a clear offer-led call-to-action. The strategy will also be reused downstream, unchanged, to build the Ideal Customer Profile, the content calendar and the social-media (SMM) strategy, INCLUDING market sizing (TAM/SAM/SOM) computed from the numbers you output here. Internal coherence and company-specificity are therefore critical: a reader must be able to identify THIS company and ITS SOLUTION from the strategy alone, without seeing its name, and every number you output must be honest about whether it is proven or assumed.
 
 === INPUT 1 - FORM DECLARATIONS (provided by the company itself) ===
 ${opts.formBlock}
@@ -695,8 +728,10 @@ R4. LISTS MUST NOT OVERLAP: capabilities = what the offer does (features/mechani
 R5. COMMERCIAL NAMES: offers, programs, certifications and labels keep their exact source wording (do not translate them), even when the rest of the output is in another language.
 R6. CHANNEL FORMAT: each channel string = "Platform (precise use + target segment)", e.g. "LinkedIn (organic + paid, targeting HR directors of 50-500 employee industrial firms)".
 R7. TACTIC FORMAT: each tactic.tactic = verb + named offer/asset + target + channel + trigger or timing, and must state the lead-capture mechanism (form, audit, demo, quote, sample, webinar registration...).
-R8. KPI FORMAT: each kpi.metric = "Metric (target: value by <quarter label>)", sized realistically for the team and company age; at least 4 of the 6 KPIs must be lead/revenue metrics (qualified leads, conversion rate, pipeline, CAC, revenue).
-R8b. GROUNDING OF NUMBERS: every KPI target and every numeric claim inside a tactic (%, €, count, duration) MUST carry an "anchor": a source-tagged verbatim quote from INPUT 2/3 that supports the figure, or the exact string "estimate" when it is a reasonable planning assumption with NO supporting evidence in the inputs. Never omit this field. Downstream systems (including market sizing) will treat "estimate"-tagged figures as non-authoritative and must not chain further arithmetic on them without flagging the result as an estimate too.
+R8. PROSPECT JOB TITLE FORMAT: prospectingKit.prospectJobTitle is exactly ONE job title (e.g. "DAF", "COO", "Directeur des opérations", "CEO") — never a list, never a vague term like "decision-maker". Pick the title most likely to pick up a cold call or open a cold email FIRST at a company matching icp.demographics, not necessarily the final budget-holder.
+R8b. GROUNDING OF NUMBERS: every numeric claim inside a tactic (%, €, count, duration), and every claim behind callValueProposition/emailIcebreakerOpening, MUST carry an "anchor": a source-tagged verbatim quote from INPUT 2/3 that supports it, or the exact string "estimate" when it is a reasonable planning assumption with NO supporting evidence in the inputs. Never omit this field. Downstream systems (including market sizing) will treat "estimate"-tagged figures as non-authoritative and must not chain further arithmetic on them without flagging the result as an estimate too.
+R8c. CALL VALUE PROPOSITION FORMAT: callValueProposition is ONE single fluid paragraph, 45-60 words, written to be SAID OUT LOUD in 20-30 seconds on a cold call — NOT a slide, NOT a list. No bullet points, no line breaks, no marketing adjectives stacked together ("innovative", "leading", "best-in-class"). It states what the company does, for whom, and the one concrete result that changes, in plain spoken language a human would actually say.
+R8d. EMAIL ICEBREAKER FORMAT: emailIcebreakerOpening (1-2 sentences) references something CONCRETE AND SPECIFIC about the target company or its situation (an offer name, a proof point, a problem named in icp.problems) — never a generic compliment ("I love what you're building") and never a generic value statement that could open an email to any company.
 R9. SOURCE PRECEDENCE when inputs conflict: crawl > linkedin > serp > form.
 R10. ${opts.langInstruction}
 
@@ -705,7 +740,7 @@ ${opts.dateLine}
 ${opts.quarterLine}
 
 === OUTPUT ===
-Return ONLY one valid JSON object, no markdown, no code fences, with this EXACT structure (same keys as the current production schema, plus siteAnalysis, anchors, and anchored kpis/tactics):
+Return ONLY one valid JSON object, no markdown, no code fences, with this EXACT structure (same keys as the current production schema, plus siteAnalysis, anchors, anchored tactics, and prospectingKit):
 {
   "siteAnalysis": {
     "positioning": "1-sentence positioning: For [target] who [need], unlike [alternative], [company] [unique mechanism/proof]",
@@ -748,9 +783,15 @@ Return ONLY one valid JSON object, no markdown, no code fences, with this EXACT 
   "tactics": [
     { "tactic": "6 tactics total, format R7, each anchored to a real offer/USP", "anchor": "source-tagged quote or 'estimate', per R8b" }
   ],
-  "kpis": [
-    { "metric": "6 KPIs total, format R8", "anchor": "source-tagged quote or 'estimate', per R8b" }
-  ],
+  "prospectingKit": {
+    "prospectJobTitle": "ONE precise job title to call first, format R8 (e.g. 'DAF', 'COO', 'Directeur des opérations') — never a list, never a vague term like 'decision-maker'",
+    "prospectJobTitleRationale": "1 sentence explaining why this title is the right first contact, grounded in icp.demographics/psychographics or siteAnalysis",
+    "callValueProposition": "ONE single fluid spoken paragraph, format R8c — no bullets, no line breaks",
+    "callValuePropositionAnchor": "source-tagged quote or 'estimate', per R8b",
+    "emailIcebreakerSubject": "email subject line, under 8 words, specific to this company",
+    "emailIcebreakerOpening": "1-2 sentences opening a cold email, format R8d",
+    "emailIcebreakerAnchor": "source-tagged quote or 'estimate', per R8b"
+  },
   "timeline": "phased timeline using ${opts.q.q1}, ${opts.q.q2}, ${opts.q.q3}, ${opts.q.q4} as quarter labels. Example: '${opts.q.q1} (Months 1-3): [action]. ${opts.q.q2} (Months 4-6): [action]. ${opts.q.q3} (Months 7-9): [action]. Full optimization by ${opts.q.q4}.'"
 }
 Return ONLY the JSON object.`;
@@ -827,7 +868,7 @@ Deno.serve(async (req: Request) => {
     const { website, businessName, businessModel, companyAge, teamSize, geographicMarket } = body;
     const language = body.language === "en" ? "en" : "fr";
     const langInstruction = language === "fr"
-      ? "IMPORTANT: Generate ALL human-readable content in French. All text fields, descriptions, tactics, KPIs and timeline must be written in French."
+      ? "IMPORTANT: Generate ALL human-readable content in French. All text fields, descriptions, tactics, the prospecting kit and timeline must be written in French."
       : "IMPORTANT: Generate ALL human-readable content in English.";
 
     const now = new Date();
@@ -1026,7 +1067,7 @@ Deno.serve(async (req: Request) => {
         siteDataConfidence: analysis.confidence ?? (hasSiteData ? "medium" : "low"),
         dataSourcesUsed: analysis.dataSourcesUsed ?? [],
         validationWarnings: validation,
-        estimatedClaims, // KPIs/tactics whose numbers are planning assumptions, not sourced facts
+        estimatedClaims, // tactics/prospectingKit figures that are planning assumptions, not sourced facts
         generatedAt: new Date().toISOString(),
       },
     };
