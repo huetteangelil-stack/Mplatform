@@ -50,8 +50,23 @@ interface Strategy {
   // traced back to evidence or flagged as "estimate". Both shapes are accepted here so
   // previously-saved strategies (plain strings) keep rendering correctly.
   tactics: (string | { tactic: string; anchor?: string })[];
-  kpis: (string | { metric: string; anchor?: string })[];
+  // v2.4: kpis replaced by prospectingKit. Kept optional so strategies saved before this
+  // change still render (falls back to a simple KPI list further down).
+  kpis?: (string | { metric: string; anchor?: string })[];
+  prospectingKit?: {
+    prospectJobTitle: string;
+    prospectJobTitleRationale: string;
+    callValueProposition: string;
+    callValuePropositionAnchor?: string;
+    emailIcebreakerSubject: string;
+    emailIcebreakerOpening: string;
+    emailIcebreakerAnchor?: string;
+  };
   timeline: string;
+}
+
+function isKitEstimate(anchor?: string): boolean {
+  return anchor?.trim().toLowerCase() === 'estimate';
 }
 
 function itemText(item: string | { tactic?: string; metric?: string; anchor?: string }): string {
@@ -72,6 +87,14 @@ export function StrategyResultPage() {
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const copyToClipboard = (field: string, text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    });
+  };
 
   const saveStrategy = useCallback(async () => {
     if (!strategy || !formData) return;
@@ -299,12 +322,26 @@ export function StrategyResultPage() {
         addText(`${idx + 1}. ${itemText(tactic)}`, margin + 2, 10, 'normal', [55, 65, 81]);
       });
 
-      // KPIs Section
-      addSectionTitle('Key Performance Indicators');
-      strategy.kpis.forEach(kpi => {
-        const suffix = isEstimate(kpi) ? '  (estimate)' : '';
-        addText(`  -  ${itemText(kpi)}${suffix}`, margin + 2, 10, 'normal', [75, 85, 99]);
-      });
+      // Prospecting Kit Section (v2.4, replaces KPIs — falls back to legacy KPIs if absent)
+      if (strategy.prospectingKit) {
+        addSectionTitle('Kit de prospection');
+        addText('Interlocuteur à cibler', margin, 11, 'bold', [55, 65, 81]);
+        addText(strategy.prospectingKit.prospectJobTitle, margin + 2, 10, 'normal', [75, 85, 99]);
+        addText(strategy.prospectingKit.prospectJobTitleRationale, margin + 2, 9, 'normal', [107, 114, 128]);
+        y += 2;
+        addText('Script téléphonique — proposition de valeur', margin, 11, 'bold', [55, 65, 81]);
+        addText(strategy.prospectingKit.callValueProposition, margin + 2, 10, 'normal', [75, 85, 99]);
+        y += 2;
+        addText('E-mail ice breaker', margin, 11, 'bold', [55, 65, 81]);
+        addText(`Objet : ${strategy.prospectingKit.emailIcebreakerSubject}`, margin + 2, 10, 'bold', [75, 85, 99]);
+        addText(strategy.prospectingKit.emailIcebreakerOpening, margin + 2, 10, 'normal', [75, 85, 99]);
+      } else if (strategy.kpis && strategy.kpis.length > 0) {
+        addSectionTitle('Key Performance Indicators');
+        strategy.kpis.forEach(kpi => {
+          const suffix = isEstimate(kpi) ? '  (estimate)' : '';
+          addText(`  -  ${itemText(kpi)}${suffix}`, margin + 2, 10, 'normal', [75, 85, 99]);
+        });
+      }
 
       // Timeline Section
       addSectionTitle('Timeline');
@@ -359,10 +396,10 @@ export function StrategyResultPage() {
           <div className="flex gap-6 lg:gap-8 items-start">
           {/* ─── Main content ─── */}
           <div className="flex-1 min-w-0 space-y-8">
-            <div className="bg-white rounded-3xl shadow-xl p-5 sm:p-8 lg:p-12 sticky top-4 z-10">
+            <div className="bg-white rounded-3xl shadow-xl p-8 sm:p-12 sticky top-4 z-10">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div>
-                  <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900">
+                  <h1 className="text-4xl font-bold text-gray-900">
                     Marketing Strategy for {formData.businessName}
                   </h1>
                   <p className="text-gray-600 mt-2">AI-Generated Ideal Customer Profile & Go-to-Market Plan</p>
@@ -408,12 +445,12 @@ export function StrategyResultPage() {
 
             {/* Compartment 1 — Description */}
             {strategy.icp.description && (
-              <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
+              <div className="bg-white rounded-2xl shadow-lg p-8">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0">
                     <span className="text-blue-600 font-bold text-xs">DESC</span>
                   </div>
-                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Description</h2>
+                  <h2 className="text-2xl font-bold text-gray-900">Description</h2>
                 </div>
 
                 <div className="space-y-6">
@@ -483,12 +520,12 @@ export function StrategyResultPage() {
 
             {/* Compartment 2 — Needs */}
             {strategy.icp.needs?.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
+              <div className="bg-white rounded-2xl shadow-lg p-8">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center flex-shrink-0">
                     <span className="text-green-600 font-bold text-xs">NEED</span>
                   </div>
-                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Needs your product potentially satisfies</h2>
+                  <h2 className="text-2xl font-bold text-gray-900">Needs your product potentially satisfies</h2>
                 </div>
                 <div className="grid md:grid-cols-2 gap-4">
                   {strategy.icp.needs.map((need, idx) => (
@@ -511,12 +548,12 @@ export function StrategyResultPage() {
 
             {/* Compartment 3 — Problems */}
             {strategy.icp.problems?.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
+              <div className="bg-white rounded-2xl shadow-lg p-8">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center flex-shrink-0">
                     <span className="text-orange-600 font-bold text-xs">PROB</span>
                   </div>
-                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Problems your product potentially solves</h2>
+                  <h2 className="text-2xl font-bold text-gray-900">Problems your product potentially solves</h2>
                 </div>
                 <div className="grid md:grid-cols-2 gap-4">
                   {strategy.icp.problems.map((problem, idx) => (
@@ -537,9 +574,9 @@ export function StrategyResultPage() {
               </div>
             )}
 
-            <div className="grid lg:grid-cols-2 gap-6 sm:gap-8">
-              <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
-                <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">Ideal Customer Profile</h2>
+            <div className="grid lg:grid-cols-2 gap-8">
+              <div className="bg-white rounded-2xl shadow-lg p-8">
+                <h2 className="text-2xl font-bold text-gray-900 mb-6">Ideal Customer Profile</h2>
 
                 <div className="space-y-6">
                   <div>
@@ -579,8 +616,8 @@ export function StrategyResultPage() {
               </div>
 
               <div className="space-y-8">
-                <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
-                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">Marketing Channels</h2>
+                <div className="bg-white rounded-2xl shadow-lg p-8">
+                  <h2 className="text-2xl font-bold text-gray-900 mb-6">Marketing Channels</h2>
 
                   <div className="space-y-6">
                     <div>
@@ -613,8 +650,8 @@ export function StrategyResultPage() {
                   </div>
                 </div>
 
-                <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
-                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4">Timeline</h2>
+                <div className="bg-white rounded-2xl shadow-lg p-8">
+                  <h2 className="text-2xl font-bold text-gray-900 mb-4">Timeline</h2>
                   <p className="text-gray-600 leading-relaxed bg-blue-50 p-4 rounded-lg border-l-4 border-blue-600">
                     {strategy.timeline}
                   </p>
@@ -622,8 +659,8 @@ export function StrategyResultPage() {
               </div>
             </div>
 
-            <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">Marketing Tactics</h2>
+            <div className="bg-white rounded-2xl shadow-lg p-8">
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">Marketing Tactics</h2>
               <div className="grid md:grid-cols-2 gap-4">
                 {strategy.tactics.map((tactic, idx) => (
                   <div
@@ -644,27 +681,74 @@ export function StrategyResultPage() {
               </div>
             </div>
 
-            <div className="bg-white rounded-2xl shadow-lg p-5 sm:p-8">
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">Key Performance Indicators</h2>
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {strategy.kpis.map((kpi, idx) => (
-                  <div
-                    key={idx}
-                    className="p-4 bg-gradient-to-br from-green-50 to-gray-50 rounded-lg border border-green-100"
-                  >
-                    <p className="text-gray-700 text-sm">
-                      {itemText(kpi)}
-                      {isEstimate(kpi) && (
-                        <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
-                      )}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
+            {strategy.prospectingKit ? (
+              <div className="bg-white rounded-2xl shadow-lg p-8">
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Kit de prospection</h2>
+                <p className="text-sm text-gray-500 mb-6">Prêt à utiliser pour un premier appel ou un premier e-mail à froid.</p>
 
-            <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl shadow-xl p-5 sm:p-8 text-white text-center">
-              <h2 className="text-xl sm:text-2xl font-bold mb-4">Ready to implement this strategy?</h2>
+                <div className="mb-6">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Interlocuteur à cibler en premier</p>
+                  <p className="text-lg font-bold text-gray-900">{strategy.prospectingKit.prospectJobTitle}</p>
+                  <p className="text-sm text-gray-600 mt-1">{strategy.prospectingKit.prospectJobTitleRationale}</p>
+                </div>
+
+                <div className="mb-6 p-5 bg-gradient-to-br from-blue-50 to-gray-50 rounded-lg border border-blue-100">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Proposition de valeur — script téléphonique</p>
+                    <button
+                      onClick={() => copyToClipboard('call', strategy.prospectingKit!.callValueProposition)}
+                      className="text-xs font-medium text-blue-600 hover:text-blue-800"
+                    >
+                      {copiedField === 'call' ? 'Copié ✓' : 'Copier'}
+                    </button>
+                  </div>
+                  <p className="text-gray-800 leading-relaxed">
+                    {strategy.prospectingKit.callValueProposition}
+                    {isKitEstimate(strategy.prospectingKit.callValuePropositionAnchor) && (
+                      <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
+                    )}
+                  </p>
+                </div>
+
+                <div className="p-5 bg-gradient-to-br from-green-50 to-gray-50 rounded-lg border border-green-100">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold text-green-700 uppercase tracking-wide">E-mail ice breaker</p>
+                    <button
+                      onClick={() => copyToClipboard('email', `${strategy.prospectingKit!.emailIcebreakerSubject}\n\n${strategy.prospectingKit!.emailIcebreakerOpening}`)}
+                      className="text-xs font-medium text-green-700 hover:text-green-900"
+                    >
+                      {copiedField === 'email' ? 'Copié ✓' : 'Copier'}
+                    </button>
+                  </div>
+                  <p className="text-sm font-semibold text-gray-900 mb-1">Objet : {strategy.prospectingKit.emailIcebreakerSubject}</p>
+                  <p className="text-gray-800 leading-relaxed">
+                    {strategy.prospectingKit.emailIcebreakerOpening}
+                    {isKitEstimate(strategy.prospectingKit.emailIcebreakerAnchor) && (
+                      <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+            ) : strategy.kpis && strategy.kpis.length > 0 ? (
+              <div className="bg-white rounded-2xl shadow-lg p-8">
+                <h2 className="text-2xl font-bold text-gray-900 mb-6">Key Performance Indicators</h2>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {strategy.kpis.map((kpi, idx) => (
+                    <div key={idx} className="p-4 bg-gradient-to-br from-green-50 to-gray-50 rounded-lg border border-green-100">
+                      <p className="text-gray-700 text-sm">
+                        {itemText(kpi)}
+                        {isEstimate(kpi) && (
+                          <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
+                        )}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl shadow-xl p-8 text-white text-center">
+              <h2 className="text-2xl font-bold mb-4">Ready to implement this strategy?</h2>
               <p className="text-blue-100 mb-6 max-w-2xl mx-auto">
                 Unlock our premium plan to get AI-assisted implementation guides, content templates, and campaign management tools.
               </p>
