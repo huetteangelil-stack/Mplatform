@@ -14,12 +14,17 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  *     computeMarketSizing(). This makes the kind of TAM/SOM arithmetic mismatch found in
  *     manual review structurally impossible, instead of just discouraged by prompt wording.
  *
- *  2. RESPECTS UPSTREAM GROUNDING: reads generate-strategy v2.2's kpis[]/tactics[] anchor
- *     fields (source-tagged quote vs the literal "estimate") and splits them into a
- *     "SOURCED FACTS" vs "PLANNING ESTIMATES" block in the prompt, so the model is told
- *     explicitly which figures it may treat as proven. Falls back gracefully (treats as
- *     estimated) if the incoming strategy predates that change and kpis/tactics are still
- *     plain strings.
+ *  2. RESPECTS UPSTREAM GROUNDING: reads generate-strategy's tactics[] anchor fields
+ *     (source-tagged quote vs the literal "estimate") and splits them into a "SOURCED
+ *     FACTS" vs "PLANNING ESTIMATES" block in the prompt, so the model is told explicitly
+ *     which figures it may treat as proven. Falls back gracefully (treats as estimated) if
+ *     the incoming strategy predates that change and tactics are still plain strings.
+ *
+ *  v1.2 update: generate-strategy v2.4 removed kpis[] (replaced by prospectingKit, which is
+ *     shown directly to the user rather than fed into market sizing). This function now
+ *     reads ONLY tactics[] for grounding — a strategy generated before v2.4 still works
+ *     identically; a strategy generated after v2.4 simply has one fewer source of anchored
+ *     figures, which tactics[] alone still covers reasonably well.
  *
  *  3. VALIDATION + RETRY for "smm_strategy": validateSmmOutput() checks the raw numeric
  *     fields and som.contributions before totals are computed; one corrective retry on
@@ -122,10 +127,10 @@ function coerceNumber(v: unknown): number | null {
   return null;
 }
 
-// v1.1: separates generate-strategy's kpis[]/tactics[] into what's actually sourced vs what
-// is a bare planning assumption, based on each item's "anchor" field (v2.2 of
-// generate-strategy). Handles the pre-v2.2 shape (plain strings, no anchor) by treating
-// those as estimated, since there is no way to know otherwise.
+// v1.2: separates generate-strategy's tactics[] into what's actually sourced vs what is a
+// bare planning assumption, based on each item's "anchor" field. Handles the pre-v2.2 shape
+// (plain strings, no anchor) by treating those as estimated, since there is no way to know
+// otherwise. kpis[] is no longer scanned — generate-strategy v2.4 removed it.
 function splitGroundedVsEstimated(strategy: Record<string, unknown>): { grounded: string[]; estimated: string[] } {
   const grounded: string[] = [];
   const estimated: string[] = [];
@@ -147,7 +152,6 @@ function splitGroundedVsEstimated(strategy: Record<string, unknown>): { grounded
       }
     }
   };
-  scan((strategy as any)?.kpis, "metric");
   scan((strategy as any)?.tactics, "tactic");
   return { grounded, estimated };
 }
