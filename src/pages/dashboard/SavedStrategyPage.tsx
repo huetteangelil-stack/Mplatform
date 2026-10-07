@@ -38,12 +38,27 @@ interface Strategy {
     secondary: string[];
   };
   tactics: (string | { tactic: string; anchor?: string })[];
-  kpis: (string | { metric: string; anchor?: string })[];
+  // v2.4: kpis replaced by prospectingKit. Kept optional so strategies saved before this
+  // change still render (falls back to a simple KPI list further down).
+  kpis?: (string | { metric: string; anchor?: string })[];
+  prospectingKit?: {
+    prospectJobTitle: string;
+    prospectJobTitleRationale: string;
+    callValueProposition: string;
+    callValuePropositionAnchor?: string;
+    emailIcebreakerSubject: string;
+    emailIcebreakerOpening: string;
+    emailIcebreakerAnchor?: string;
+  };
   timeline: string;
 }
 
 function itemText(item: string | { tactic?: string; metric?: string; anchor?: string }): string {
   return typeof item === 'string' ? item : (item.tactic ?? item.metric ?? '');
+}
+
+function isKitEstimate(anchor?: string): boolean {
+  return anchor?.trim().toLowerCase() === 'estimate';
 }
 
 function isEstimate(item: string | { anchor?: string }): boolean {
@@ -66,6 +81,14 @@ export function SavedStrategyPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const copyToClipboard = (field: string, text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    });
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -185,8 +208,20 @@ export function SavedStrategyPage() {
     addSectionTitle('Marketing Tactics');
     strategy.tactics?.forEach((t, idx) => addText(`${idx + 1}. ${itemText(t)}`, margin + 2, 10, 'normal', [55, 65, 81]));
 
-    addSectionTitle('Key Performance Indicators');
-    strategy.kpis?.forEach(kpi => addText(`  -  ${itemText(kpi)}${isEstimate(kpi) ? '  (estimate)' : ''}`, margin + 2, 10, 'normal', [75, 85, 99]));
+    if (strategy.prospectingKit) {
+      addSectionTitle('Kit de prospection');
+      addText('Interlocuteur à cibler', margin, 11, 'bold', [55, 65, 81]);
+      addText(strategy.prospectingKit.prospectJobTitle, margin + 2, 10, 'normal', [75, 85, 99]);
+      addText(strategy.prospectingKit.prospectJobTitleRationale, margin + 2, 9, 'normal', [107, 114, 128]);
+      addText('Script téléphonique — proposition de valeur', margin, 11, 'bold', [55, 65, 81]);
+      addText(strategy.prospectingKit.callValueProposition, margin + 2, 10, 'normal', [75, 85, 99]);
+      addText('E-mail ice breaker', margin, 11, 'bold', [55, 65, 81]);
+      addText(`Objet : ${strategy.prospectingKit.emailIcebreakerSubject}`, margin + 2, 10, 'bold', [75, 85, 99]);
+      addText(strategy.prospectingKit.emailIcebreakerOpening, margin + 2, 10, 'normal', [75, 85, 99]);
+    } else if (strategy.kpis && strategy.kpis.length > 0) {
+      addSectionTitle('Key Performance Indicators');
+      strategy.kpis.forEach(kpi => addText(`  -  ${itemText(kpi)}${isEstimate(kpi) ? '  (estimate)' : ''}`, margin + 2, 10, 'normal', [75, 85, 99]));
+    }
 
     addSectionTitle('Timeline');
     addText(strategy.timeline ?? '', margin + 4, 10, 'normal', [37, 99, 235]);
@@ -204,7 +239,7 @@ export function SavedStrategyPage() {
 
   if (error || !row) {
     return (
-      <div className="p-5 sm:p-8">
+      <div className="p-8">
         <button onClick={() => navigate('/dashboard/strategies')} className="flex items-center gap-2 text-gray-600 hover:text-blue-600 transition-colors font-medium mb-8">
           <ArrowLeft size={20} /> Back to strategies
         </button>
@@ -494,8 +529,56 @@ export function SavedStrategyPage() {
         </div>
       )}
 
-      {/* KPIs */}
-      {strategy.kpis?.length > 0 && (
+      {/* Kit de prospection (v2.4, remplace les KPIs) */}
+      {strategy.prospectingKit ? (
+        <div className="bg-white rounded-2xl shadow-sm p-6 sm:p-8 mb-6">
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Kit de prospection</h2>
+          <p className="text-sm text-gray-500 mb-6">Prêt à utiliser pour un premier appel ou un premier e-mail à froid.</p>
+
+          <div className="mb-6">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Interlocuteur à cibler en premier</p>
+            <p className="text-lg font-bold text-gray-900">{strategy.prospectingKit.prospectJobTitle}</p>
+            <p className="text-sm text-gray-600 mt-1">{strategy.prospectingKit.prospectJobTitleRationale}</p>
+          </div>
+
+          <div className="mb-6 p-5 bg-gradient-to-br from-blue-50 to-gray-50 rounded-lg border border-blue-100">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Proposition de valeur — script téléphonique</p>
+              <button
+                onClick={() => copyToClipboard('call', strategy.prospectingKit!.callValueProposition)}
+                className="text-xs font-medium text-blue-600 hover:text-blue-800"
+              >
+                {copiedField === 'call' ? 'Copié ✓' : 'Copier'}
+              </button>
+            </div>
+            <p className="text-gray-800 leading-relaxed">
+              {strategy.prospectingKit.callValueProposition}
+              {isKitEstimate(strategy.prospectingKit.callValuePropositionAnchor) && (
+                <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
+              )}
+            </p>
+          </div>
+
+          <div className="p-5 bg-gradient-to-br from-green-50 to-gray-50 rounded-lg border border-green-100">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-green-700 uppercase tracking-wide">E-mail ice breaker</p>
+              <button
+                onClick={() => copyToClipboard('email', `${strategy.prospectingKit!.emailIcebreakerSubject}\n\n${strategy.prospectingKit!.emailIcebreakerOpening}`)}
+                className="text-xs font-medium text-green-700 hover:text-green-900"
+              >
+                {copiedField === 'email' ? 'Copié ✓' : 'Copier'}
+              </button>
+            </div>
+            <p className="text-sm font-semibold text-gray-900 mb-1">Objet : {strategy.prospectingKit.emailIcebreakerSubject}</p>
+            <p className="text-gray-800 leading-relaxed">
+              {strategy.prospectingKit.emailIcebreakerOpening}
+              {isKitEstimate(strategy.prospectingKit.emailIcebreakerAnchor) && (
+                <span className="ml-2 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full align-middle">estimation</span>
+              )}
+            </p>
+          </div>
+        </div>
+      ) : strategy.kpis && strategy.kpis.length > 0 ? (
         <div className="bg-white rounded-2xl shadow-sm p-6 sm:p-8 mb-6">
           <h2 className="text-2xl font-bold text-gray-900 mb-6">Key Performance Indicators</h2>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -511,7 +594,7 @@ export function SavedStrategyPage() {
             ))}
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
