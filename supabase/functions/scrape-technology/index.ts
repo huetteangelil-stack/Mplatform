@@ -1,6 +1,49 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
+/**
+ * scrape-technology — v1.1 (confirmed input schema)
+ * ---------------------------------------------------------------------------------------
+ * v1.1: the Actor's real input schema is now confirmed from its own "API client" code
+ * sample: { "startDomains": ["example.com"], "maxRequestsPerCrawl": <number> } — a bare
+ * domain (no https://, no path), not a URL. The defensive multi-field-name guess from v1.0
+ * is removed; runTechScraper() now sends exactly this shape.
+ *
+ * New function. Launches the Apify "technology scraper" Actor (the one behind
+ * https://api.apify.com/v2/actor-runs/bz9vZiuLXXIif9R1Z — that URL was a single past RUN,
+ * not reusable; its actId, eFu56JAhgAGsIXfT4, is the reusable Actor this function calls)
+ * against a given website, and returns the detected technology stack as a flat array of
+ * { name, tag, categories, link }, matching the Actor's own dataset item shape.
+ *
+ * Auth: dashboard-only (this is only ever called from SmmStrategiesPage, which sits behind
+ * DashboardLayout's session check) — same hard-gate + per-user daily quota pattern as
+ * generate-content.ts, reusing ITS OWN quota table so a burst of tech scrapes can't starve
+ * content-generation quota or vice versa.
+ *
+ * Persistence (optional, best-effort): pass `strategyId` (the marketing_strategies row id)
+ * to have the result saved into that row's `tech_stack` jsonb column, so the page doesn't
+ * need to re-run the scraper on every reload. Omit it to just get the result back without
+ * saving (e.g. for an ad-hoc check).
+ *
+ * New table required (run once):
+ *
+ *   CREATE TABLE IF NOT EXISTS tech_scrape_quota (
+ *     user_id uuid NOT NULL,
+ *     day date NOT NULL,
+ *     count integer NOT NULL DEFAULT 0,
+ *     PRIMARY KEY (user_id, day)
+ *   );
+ *
+ * New column required on the existing `marketing_strategies` table (run once):
+ *
+ *   ALTER TABLE marketing_strategies ADD COLUMN IF NOT EXISTS tech_stack jsonb;
+ *
+ * Env vars: APIFY_API_KEY (already registered per the user), SUPABASE_URL,
+ * SUPABASE_SERVICE_ROLE_KEY (auto-injected), ALLOWED_ORIGIN (optional), TECH_SCRAPER_ACTOR_ID
+ * (optional override — defaults to the known actId eFu56JAhgAGsIXfT4),
+ * TECH_SCRAPER_MAX_REQUESTS (optional override of MAX_REQUESTS_PER_CRAWL below).
+ */
+
 const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || "*";
 const corsHeaders = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
@@ -8,14 +51,18 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const DEFAULT_ACTOR_ID = "eFu56JAhgAGsIXfT4";
-const ACTOR_WAIT_SECONDS = 30;
+const DEFAULT_ACTOR_ID = "eFu56JAhgAGsIXfT4"; // the Actor behind the sample run the user shared
+const ACTOR_WAIT_SECONDS = 30; // the sample run finished in ~2.4s; 30s is a generous budget
 const DAILY_SCRAPE_QUOTA = 50;
+// v1.1: the Actor's own example uses 10000000 (effectively "crawl the whole site"), which
+// risks long runs and higher PAY_PER_EVENT cost (one dataset item = one charge) for what we
+// need here — a technology profile, not an exhaustive site crawl. Starting conservative;
+// raise via TECH_SCRAPER_MAX_REQUESTS if the detection coverage feels too shallow.
 const DEFAULT_MAX_REQUESTS_PER_CRAWL = 20;
 
 interface TechScrapeRequest {
   website: string;
-  strategyId?: string;
+  strategyId?: string; // optional: marketing_strategies row id, to persist the result
 }
 
 interface TechItem {
@@ -44,8 +91,13 @@ function normalizeWebsite(input: string): { full: string; domain: string } {
   }
 }
 
+// Same pattern as apifyLinkedInCompany in generate-strategy.ts: start the run, wait, poll
+// once more if needed, then fetch the dataset. This Actor is much faster (~2-3s observed),
+// so the waits here are shorter.
 async function runTechScraper(website: string, token: string, actorId: string, maxRequestsPerCrawl: number): Promise<TechItem[] | null> {
   const { domain } = normalizeWebsite(website);
+  // Confirmed shape from the Actor's own API client sample: a bare domain (no https://), in
+  // an array, plus a crawl-depth budget.
   const input = { startDomains: [domain], maxRequestsPerCrawl };
 
   const startRun = async () => {
@@ -110,6 +162,7 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
+  // --- auth guard, dashboard-only: same hard-gate pattern as generate-content.ts ---
   const authHeader = req.headers.get("Authorization") || "";
   const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
 
@@ -154,6 +207,7 @@ Deno.serve(async (req: Request) => {
   } else {
     console.warn("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set — auth/quota guard disabled.");
   }
+  // --- end auth guard ---
 
   try {
     const body = await req.json() as TechScrapeRequest;
@@ -176,6 +230,7 @@ Deno.serve(async (req: Request) => {
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // Best-effort persistence — never blocks or fails the response.
     if (supabaseAdmin && body.strategyId) {
       try {
         await supabaseAdmin
