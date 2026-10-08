@@ -2,8 +2,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 /**
- * generate-strategy — v2.4 (prospecting kit replaces KPIs + anonymous-aware security)
+ * generate-strategy — v2.5 (+ businessContext passthrough for SOM capacity cross-check)
  * ---------------------------------------------------------------------------------------
+ * v2.5 change: the response now includes "businessContext": { teamSize, monthlyBudget,
+ * companyAge } — a deterministic passthrough of the form's own fields, not LLM-generated.
+ * generate-content.ts v1.3's smm_strategy mode reads this to cap the SOM by the team's
+ * actual capacity instead of only summing a lead funnel. No prompt change needed for this.
+ *
  * v2.4 change: the "kpis" field is REMOVED and replaced by "prospectingKit" — a
  * ready-to-use prospecting kit instead of abstract targets:
  *   - prospectJobTitle / prospectJobTitleRationale: ONE precise job title to call first
@@ -1059,6 +1064,10 @@ Deno.serve(async (req: Request) => {
 
     const responsePayload = {
       ...strategy,
+      // v2.5: deterministic passthrough of the form's own declarations (NOT LLM-generated,
+      // so zero hallucination risk) — lets downstream consumers (generate-content's SOM
+      // capacity cross-check) know the team's actual size/budget without a second lookup.
+      businessContext: { teamSize, monthlyBudget: body.monthlyBudget ?? null, companyAge },
       _meta: {
         crawledPages: crawl.pages.map((p) => p.url),
         serpQueries: serpResults.map((s) => s.query),
