@@ -2,9 +2,34 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 /**
- * generate-content — v1.1 (grounded SMM math + security + validation hardening)
+ * generate-content — v1.3 (named-sector TAM with real search + capacity-capped SOM)
  * ---------------------------------------------------------------------------------------
- * v1.1 changes on top of v1.0:
+ * v1.3 changes on top of v1.2, directly addressing "le potentiel est très loin du compte":
+ *
+ *  A. TAM BY NAMED SECTOR, GROUNDED IN SEARCH (root-cause fix): the old TAM asked the LLM
+ *     to estimate a count for a vague bucket ("all French TPE/PME"), which is exactly the
+ *     kind of blind guess that was off by 2-3x in manual review. Now: a small first
+ *     DeepSeek call (extractTargetSector) reads the strategy and names the SPECIFIC sector
+ *     the customers belong to (e.g. "entreprises de transport et logistique en France", not
+ *     "all businesses"), plus a search query for its real size. If SERPAPI_API_KEY is set,
+ *     that query is run for real (serpSearch, same function as generate-strategy.ts) and the
+ *     results are handed to the main prompt as SECTOR SIZING EVIDENCE — so tam.potentialCustomers
+ *     can be grounded in an actual source instead of the model's internal guess. Without a
+ *     SerpApi key, it falls back to the old behavior (LLM estimate, tagged "estimate").
+ *
+ *  B. SAM BY EXPLICIT FILTERS: sam.penetrationOfTam must now be justified by a named list of
+ *     filters (sam.filters[]: company size, tech stack, geography...), not a bare percentage
+ *     pulled from nowhere.
+ *
+ *  C. SOM CAPPED BY REAL CAPACITY: the model still proposes som.contributions (the funnel,
+ *     unchanged from v1.1), but now ALSO proposes som.salesCapacityPerYear — how many NEW
+ *     customers the team can realistically onboard in year 1, grounded in the strategy's new
+ *     businessContext (teamSize/monthlyBudget, passed through by generate-strategy v2.5).
+ *     computeMarketSizing() takes MIN(funnel sum, capacity) as the final figure and flags
+ *     `cappedByCapacity: true` when capacity is the binding constraint — this is the direct
+ *     code implementation of "tu croises avec tes capacités actuelles".
+ *
+ * v1.1/v1.2 changes (still in effect):
  *
  *  1. GROUNDED MARKET SIZING (root-cause fix): the "smm_strategy" mode no longer asks the
  *     LLM to compute marketValue or the SOM total itself. It now returns raw numeric inputs
@@ -72,6 +97,60 @@ const corsHeaders = {
 
 const DAILY_CONTENT_QUOTA = 150; // v1.1: separate, higher-volume quota than generate-strategy
 const SMM_MAX_TOKENS = 5000; // v1.1: bumped from 4000 — anchors + contributions add tokens
+
+function envFirst(names: string[]): string | undefined {
+  for (const n of names) {
+    const v = Deno.env.get(n);
+    if (v && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+// v1.3: same SerpApi call as generate-strategy.ts, used here only for sector-sizing searches.
+async function serpSearch(query: string, apiKey: string, hl: string): Promise<{ title: string; link: string; snippet: string }[] | null> {
+  const url = new URL("https://serpapi.com/search.json");
+  url.searchParams.set("engine", "google");
+  url.searchParams.set("q", query);
+  url.searchParams.set("hl", hl);
+  url.searchParams.set("num", "6");
+  url.searchParams.set("api_key", apiKey);
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const organic: any[] = Array.isArray(data.organic_results) ? data.organic_results : [];
+    const results = organic.slice(0, 5).map((r) => ({
+      title: String(r.title || "").replace(/\s+/g, " ").trim(),
+      link: String(r.link || ""),
+      snippet: String(r.snippet || "").replace(/\s+/g, " ").trim(),
+    })).filter((r) => r.title || r.snippet);
+    return results.length ? results : null;
+  } catch {
+    return null;
+  }
+}
+
+// v1.3: small, cheap pre-call — names the SPECIFIC sector the target customers belong to
+// (not the company's own sector) and a search query to size it for real. This is what lets
+// TAM say "entreprises de transport et logistique en France" instead of a generic bucket.
+async function extractTargetSector(strategyJson: string, lang: string): Promise<{ targetSector: string; searchQuery: string } | null> {
+  const prompt = `From the marketing strategy JSON below, identify the specific industry/sector that this company's CUSTOMERS belong to (not the company's own sector — the sector of who BUYS from them). Phrase it precisely enough to search for a real company count, e.g. "entreprises de transport et logistique en France", "cabinets d'avocats en France", "PME du secteur de la restauration en France". Then write a short Google search query (5-8 words, ${lang === "fr" ? "in French" : "in English"}) to find the real number of such companies.
+
+Return ONLY this JSON, no markdown: {"targetSector": "...", "searchQuery": "..."}
+
+Strategy:
+${strategyJson}`;
+  try {
+    const raw = await callDeepSeek([{ role: "user", content: prompt }], 0.2, 300);
+    const parsed = extractJsonValue(raw) as any;
+    if (parsed?.targetSector && parsed?.searchQuery) {
+      return { targetSector: String(parsed.targetSector), searchQuery: String(parsed.searchQuery) };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 interface ContentRequest {
   mode: "topics" | "drafts" | "hooks" | "icp_insights" | "smm_strategy";
@@ -171,9 +250,11 @@ function buildGroundedBlock(strategy: Record<string, unknown>): string {
 function validateSmmOutput(s: any): string[] {
   const problems: string[] = [];
   if (!s || typeof s !== "object") return ["root is not an object"];
+  if (typeof s.tam?.targetSector !== "string" || s.tam.targetSector.trim().length < 5) problems.push("tam.targetSector");
   if (coerceNumber(s.tam?.potentialCustomers) === null) problems.push("tam.potentialCustomers");
   if (coerceNumber(s.tam?.acv) === null) problems.push("tam.acv");
   if (coerceNumber(s.sam?.penetrationOfTam) === null) problems.push("sam.penetrationOfTam");
+  if (!Array.isArray(s.sam?.filters) || s.sam.filters.length < 1) problems.push("sam.filters (array >= 1)");
   if (!Array.isArray(s.som?.contributions) || s.som.contributions.length < 2) {
     problems.push("som.contributions (array >= 2)");
   } else {
@@ -207,7 +288,13 @@ function computeMarketSizing(raw: any): any {
   const samEstimated = tamEstimated || isEstimate(raw?.sam?.penetrationAnchor) || isEstimate(raw?.sam?.acvAnchor);
 
   const contributions = Array.isArray(raw?.som?.contributions) ? raw.som.contributions : [];
-  const somCustomers = contributions.reduce((sum: number, c: any) => sum + (coerceNumber(c?.customers) ?? 0), 0);
+  const funnelSum = contributions.reduce((sum: number, c: any) => sum + (coerceNumber(c?.customers) ?? 0), 0);
+  // v1.3: cross-reference with real capacity (team size / budget) — the actual code
+  // implementation of "tu croises avec tes capacités actuelles". If the model didn't (or
+  // couldn't) provide a capacity figure, nothing is capped — same behavior as v1.1.
+  const capacityCeiling = coerceNumber(raw?.som?.salesCapacityPerYear);
+  const cappedByCapacity = capacityCeiling !== null && funnelSum > capacityCeiling;
+  const somCustomers = capacityCeiling !== null ? Math.min(funnelSum, capacityCeiling) : funnelSum;
   const somAcv = coerceNumber(raw?.som?.acv) ?? tamAcv;
   const somMarketValue = somCustomers * somAcv;
   const somEstimated =
@@ -215,6 +302,7 @@ function computeMarketSizing(raw: any): any {
 
   return {
     tam: {
+      targetSector: raw?.tam?.targetSector ?? "", // v1.3: the specific named sector, not a generic bucket
       description: raw?.tam?.description ?? "",
       potentialCustomers: tamCustomers,
       customersAnchor: raw?.tam?.customersAnchor ?? "estimate",
@@ -226,6 +314,7 @@ function computeMarketSizing(raw: any): any {
     },
     sam: {
       description: raw?.sam?.description ?? "",
+      filters: Array.isArray(raw?.sam?.filters) ? raw.sam.filters : [], // v1.3: named, justified filters
       potentialCustomers: samCustomers, // derived in code FROM tam.potentialCustomers x penetration
       penetrationOfTam: penetration,
       penetrationAnchor: raw?.sam?.penetrationAnchor ?? "estimate",
@@ -238,7 +327,11 @@ function computeMarketSizing(raw: any): any {
     som: {
       description: raw?.som?.description ?? "",
       contributions,
-      potentialCustomers: somCustomers, // computed here as SUM(contributions[].customers) — the reconciliation fix
+      funnelPotentialCustomers: funnelSum, // v1.3: shown even when capped, for transparency
+      salesCapacityPerYear: capacityCeiling,
+      salesCapacityRationale: raw?.som?.salesCapacityRationale ?? "",
+      cappedByCapacity, // v1.3: true when capacity, not the lead funnel, is the binding constraint
+      potentialCustomers: somCustomers, // = MIN(funnel sum, capacity) when capacity is known, else funnel sum
       acv: somAcv,
       acvAnchor: raw?.som?.acvAnchor ?? "estimate",
       marketValue: somMarketValue,
@@ -249,10 +342,19 @@ function computeMarketSizing(raw: any): any {
   };
 }
 
-function buildSmmPrompt(strategy: string, groundedBlock: string): string {
+function buildSmmPrompt(
+  strategy: string,
+  groundedBlock: string,
+  sectorBlock: string,
+  businessContextBlock: string,
+): string {
   return `You are Elsa, an expert go-to-market strategist. Using ONLY the marketing strategy and ICP below, produce the RAW INPUTS for a market sizing and buyer persona analysis. Do not invent business details that contradict the strategy.
 
 ${groundedBlock}
+
+${sectorBlock}
+
+${businessContextBlock}
 
 IMPORTANT — NUMBERS ONLY, NO ARITHMETIC BY YOU:
 Do not compute totals, products, or market values yourself. Return only the raw numeric inputs (customer counts, ACV, percentages) with their justification. All multiplication and summation will be done in code from the numbers you provide, so consistency between your "rationale" text and the numbers you output matters far more than a polished-looking final figure — there will be no final figure for you to polish.
@@ -261,29 +363,35 @@ Return ONLY a JSON object with this EXACT structure (no markdown, no code fences
 
 {
   "tam": {
+    "targetSector": "the SPECIFIC named sector of the target customers (use the one given above if provided) — never a generic bucket like 'all businesses' or 'all TPE/PME'",
     "description": "What the Total Addressable Market represents for this business (1-2 sentences)",
-    "potentialCustomers": <number>,
-    "customersAnchor": "source-tagged quote from the SOURCED FACTS block above, or the exact string 'estimate'",
+    "potentialCustomers": <number — the real count of companies in targetSector, taken from SECTOR SIZING EVIDENCE below if it contains one, otherwise a clearly labeled estimate>,
+    "customersAnchor": "source-tagged quote from SECTOR SIZING EVIDENCE or SOURCED FACTS, or the exact string 'estimate'",
     "acv": <number, annual contract value in EUR>,
     "acvAnchor": "source-tagged quote, or the exact string 'estimate'",
-    "rationale": "2-3 sentences explaining the assumptions behind potentialCustomers and acv"
+    "rationale": "2-3 sentences explaining the assumptions behind potentialCustomers and acv, naming the source if SECTOR SIZING EVIDENCE was used"
   },
   "sam": {
     "description": "What the Serviceable Available Market represents given this business's model, geography and capabilities (1-2 sentences)",
-    "penetrationOfTam": <number 0-100, the percentage of TAM realistically reachable through this business's actual channels>,
+    "filters": [
+      { "criterion": "short label, e.g. 'Taille d'entreprise: 10-250 salariés'", "justification": "1 short phrase why this filter applies, grounded in the ICP or strategy" }
+    ],
+    "penetrationOfTam": <number 0-100 — must be the realistic combined effect of the filters listed above, not an independent guess>,
     "penetrationAnchor": "source-tagged quote, or the exact string 'estimate'",
     "acv": <number, usually the same as tam.acv unless you justify a difference>,
     "acvAnchor": "source-tagged quote, or the exact string 'estimate'",
-    "rationale": "2-3 sentences explaining which segments of the TAM are excluded and why"
+    "rationale": "2-3 sentences explaining which segments of the TAM are excluded and why, referencing the filters"
   },
   "som": {
     "description": "What the Serviceable Obtainable Market represents — the realistic short-term capture (1-2 sentences)",
     "contributions": [
-      { "source": "short label for this acquisition channel or mechanism, drawn from the strategy's tactics/KPIs", "customers": <number of new customers this channel realistically brings in year 1>, "anchor": "source-tagged quote, or the exact string 'estimate'" }
+      { "source": "short label for this acquisition channel or mechanism, drawn from the strategy's tactics", "customers": <number of new customers this channel realistically brings in year 1>, "anchor": "source-tagged quote, or the exact string 'estimate'" }
     ],
+    "salesCapacityPerYear": <number — how many NEW customers the team described in BUSINESS CAPACITY below can realistically onboard/sell to in year 1, independent of lead volume>,
+    "salesCapacityRationale": "1-2 sentences explaining this ceiling, referencing team size and/or budget from BUSINESS CAPACITY",
     "acv": <number, usually the same as tam.acv unless you justify a difference>,
     "acvAnchor": "source-tagged quote, or the exact string 'estimate'",
-    "rationale": "2-3 sentences on competition, traction and capture assumptions — this rationale MUST be consistent with the sum of 'contributions', since that sum (not a separately imagined number) is what will be used as the final SOM figure"
+    "rationale": "2-3 sentences on competition, traction and capture assumptions — MUST be consistent with the sum of 'contributions', since that sum (capped by salesCapacityPerYear) is what will be used as the final SOM figure, not a separately imagined number"
   },
   "personas": [
     { "name": "Persona name (e.g. 'Sarah the CEO')", "role": "Job title / role", "description": "1-2 sentence summary of who this persona is", "motivations": ["3-4 key motivations"], "painPoints": ["3-4 specific pain points"], "kpis": ["3-4 KPIs they are responsible for"], "responsibilities": ["3-4 key responsibilities"], "reportingTo": "Who they report to", "buyingRole": "Their role in the buying process (e.g. decision-maker, influencer, champion)" },
@@ -291,7 +399,7 @@ Return ONLY a JSON object with this EXACT structure (no markdown, no code fences
   ]
 }
 
-Provide 2 to 5 "contributions" entries for the SOM, each tied to a real channel or mechanism named in the strategy's tactics or KPIs (a lead-gen channel, a partner/franchise network, existing pipeline, etc.) — do not invent a channel that isn't grounded in the strategy or explicitly tagged "estimate". Generate exactly 2 distinct buyer personas, specific to the ICP and business context.
+Provide 2 to 5 "contributions" entries for the SOM, each tied to a real channel or mechanism named in the strategy's tactics — do not invent a channel that isn't grounded in the strategy or explicitly tagged "estimate". Provide 1 to 4 "filters" entries for the SAM, each a real, checkable criterion (company size, tech stack, geography, budget), not a vague statement. Generate exactly 2 distinct buyer personas, specific to the ICP and business context.
 
 Marketing strategy:
 ${strategy}`;
@@ -395,11 +503,45 @@ Deno.serve(async (req: Request) => {
     }
 
     const strategy = JSON.stringify(body.strategy);
+    const lang = "fr"; // this app generates in French by default (see generate-strategy's langInstruction)
+
+    // v1.3: smm_strategy only — find the real sector + search it for real before prompting.
+    let sectorBlock = "(no sector sizing search performed)";
+    let businessContextBlock = "(no team size / budget declared)";
+    if (body.mode === "smm_strategy") {
+      const serpKey = envFirst(["SERPAPI_API_KEY", "SERPAPI-API-KEY", "SERPAPIAPIKEY"]);
+      const sector = await extractTargetSector(strategy, lang);
+      if (sector) {
+        let evidenceLines = "(no SERPAPI_API_KEY set — no real search performed, treat as 'estimate')";
+        if (serpKey) {
+          const results = await serpSearch(sector.searchQuery, serpKey, lang);
+          evidenceLines = results?.length
+            ? results.map((r) => "- " + r.title + (r.link ? " | " + r.link : "") + (r.snippet ? "\n  " + r.snippet : "")).join("\n")
+            : "(search returned nothing usable — treat as 'estimate')";
+        }
+        sectorBlock = [
+          "=== SECTOR SIZING EVIDENCE ===",
+          `Target sector identified: ${sector.targetSector}`,
+          `Search query used: "${sector.searchQuery}"`,
+          evidenceLines,
+        ].join("\n");
+      }
+
+      const ctx = (body.strategy as any)?.businessContext;
+      if (ctx && (ctx.teamSize || ctx.monthlyBudget)) {
+        businessContextBlock = [
+          "=== BUSINESS CAPACITY (declared by the company itself) ===",
+          ctx.teamSize ? `Team size: ${ctx.teamSize}` : null,
+          ctx.monthlyBudget ? `Monthly marketing budget: ${ctx.monthlyBudget}` : null,
+          ctx.companyAge ? `Company age: ${ctx.companyAge}` : null,
+        ].filter(Boolean).join("\n");
+      }
+    }
 
     // v1.1: smm_strategy gets its own prompt builder (grounded block + numbers-only schema).
     // The other four modes keep their original prompts, verbatim.
     const prompt = body.mode === "smm_strategy"
-      ? buildSmmPrompt(strategy, buildGroundedBlock(body.strategy))
+      ? buildSmmPrompt(strategy, buildGroundedBlock(body.strategy), sectorBlock, businessContextBlock)
       : body.mode === "icp_insights"
       ? `You are Elsa, an expert customer research strategist. Using only the complete marketing strategy below, generate exactly 12 customer insights for this ideal customer profile. Do not change, contradict, or invent the business context. Return ONLY a JSON object with this exact structure: {"groups":[{"title":"Customer overview","items":[{"title":"Jobs-to-be-Done","description":"...","count":1}]},{"title":"Goals, challenges & motivation","items":[{"title":"Problems","description":"..."},{"title":"Pain points and frustrations","description":"...","count":3},{"title":"Decision triggers","description":"...","count":2}]},{"title":"Buying behavior","items":[{"title":"Alternative solutions","description":"..."},{"title":"Existing knowledge","description":"..."},{"title":"Buying criteria","description":"...","count":2}]},{"title":"Marketing and communication","items":[{"title":"Best channels to reach customers","description":"...","count":1},{"title":"20+ places where customers spend time","description":"...","count":2},{"title":"Preferred communication channels","description":"..."},{"title":"Essential tools","description":"..."},{"title":"Information sources buyer trusts","description":"...","count":1}]}]}. The four groups must contain exactly 1, 3, 3, and 5 items, for exactly 12 total. Each description should be specific, practical, and based on the ICP demographics, psychographics, pain points, goals, problems, needs, benefits, channels, tactics, and KPIs. Counts are optional small integers representing the number of concrete insights in that row. Do not use markdown or extra text.\n\nMarketing strategy:\n${strategy}`
       : body.mode === "topics"
