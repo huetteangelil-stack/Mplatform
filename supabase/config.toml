@@ -4,3 +4,6 @@ timeout = "300s"
 
 [functions.generate-content]
 verify_jwt = true
+
+[functions.scrape-technology]
+verify_jwt = true
