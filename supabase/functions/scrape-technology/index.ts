@@ -44,12 +44,27 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  * TECH_SCRAPER_MAX_REQUESTS (optional override of MAX_REQUESTS_PER_CRAWL below).
  */
 
-const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || "*";
-const corsHeaders = {
-  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
-};
+const STATIC_ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || ""; // e.g. https://mplateform.netlify.app
+
+// v1.1: a single static origin breaks dev previews — bolt.new/WebContainer preview URLs
+// (*.webcontainer-api.io) change every session, so hardcoding one exact value locks out
+// every preview after the first. See generate-strategy.ts v2.6 for the full rationale.
+function buildCorsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin") || req.headers.get("origin") || "";
+  let allowOrigin = STATIC_ALLOWED_ORIGIN || "*";
+  if (origin) {
+    const isConfigured = STATIC_ALLOWED_ORIGIN && origin === STATIC_ALLOWED_ORIGIN;
+    const isWebContainerPreview = /^https:\/\/[a-z0-9.-]+\.webcontainer-api\.io$/i.test(origin);
+    const isLocalDev = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+    if (isConfigured || isWebContainerPreview || isLocalDev) allowOrigin = origin;
+  }
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+    "Vary": "Origin",
+  };
+}
 
 const DEFAULT_ACTOR_ID = "eFu56JAhgAGsIXfT4"; // the Actor behind the sample run the user shared
 const ACTOR_WAIT_SECONDS = 30; // the sample run finished in ~2.4s; 30s is a generous budget
@@ -158,6 +173,8 @@ async function runTechScraper(website: string, token: string, actorId: string, m
 }
 
 Deno.serve(async (req: Request) => {
+  const corsHeaders = buildCorsHeaders(req); // v1.1: per-request, see buildCorsHeaders above
+
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
