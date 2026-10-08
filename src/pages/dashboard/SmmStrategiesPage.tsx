@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Briefcase, ChevronRight, Download, LockKeyhole, Megaphone, RefreshCw, Share2, Sparkles, Target, TrendingUp, Users } from 'lucide-react';
+import { ArrowLeft, Briefcase, ChevronRight, Cpu, Download, LockKeyhole, Megaphone, RefreshCw, Share2, Sparkles, Target, TrendingUp, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 
 interface Business { id: string; name: string; website: string; }
+
+interface TechItem {
+  name: string;
+  tag: string;
+  categories: string[];
+  link: string;
+}
 
 interface StrategyRecord {
   id: string;
@@ -12,6 +19,7 @@ interface StrategyRecord {
   website: string;
   strategy_data: Record<string, unknown>;
   smm_strategy: SmmStrategy | null;
+  tech_stack?: TechItem[] | null;
 }
 
 interface MarketContribution {
@@ -20,14 +28,26 @@ interface MarketContribution {
   anchor?: string;
 }
 
+interface MarketFilter {
+  criterion: string;
+  justification: string;
+}
+
 interface MarketLayer {
   description: string;
   potentialCustomers: number;
   acv: number;
   marketValue: number;
   rationale: string;
-  basedOnEstimates?: boolean; // v2.3: true if any input behind this figure is tagged "estimate"
-  contributions?: MarketContribution[]; // v2.3: SOM only — the named contributions summed to get potentialCustomers
+  basedOnEstimates?: boolean; // true if any input behind this figure is tagged "estimate"
+  contributions?: MarketContribution[]; // SOM only — the named contributions summed to get potentialCustomers
+  // v1.3 (generate-content):
+  targetSector?: string; // TAM only — the specific named sector, not a generic bucket
+  filters?: MarketFilter[]; // SAM only — the explicit criteria behind penetrationOfTam
+  funnelPotentialCustomers?: number; // SOM only — the raw funnel sum, before any capacity cap
+  salesCapacityPerYear?: number | null; // SOM only — how many new customers the team can realistically onboard
+  salesCapacityRationale?: string; // SOM only
+  cappedByCapacity?: boolean; // SOM only — true when capacity, not lead volume, is the binding constraint
 }
 
 function formatNumber(n: number): string {
@@ -63,6 +83,9 @@ export function SmmStrategiesPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState('');
   const [expandedPersona, setExpandedPersona] = useState<number | null>(null);
+  const [techStack, setTechStack] = useState<TechItem[] | null>(null);
+  const [isScrapingTech, setIsScrapingTech] = useState(false);
+  const [techError, setTechError] = useState('');
 
   const selectedStrategy = useMemo(
     () => strategies.find(s => s.business_id === selectedBusinessId) ?? null,
@@ -73,7 +96,7 @@ export function SmmStrategiesPage() {
     const loadData = async () => {
       const [{ data: bizData }, { data: stratData }] = await Promise.all([
         supabase.from('businesses').select('id, name, website').order('name'),
-        supabase.from('marketing_strategies').select('id, business_id, business_name, website, strategy_data, smm_strategy').order('created_at', { ascending: false }),
+        supabase.from('marketing_strategies').select('id, business_id, business_name, website, strategy_data, smm_strategy, tech_stack').order('created_at', { ascending: false }),
       ]);
       setBusinesses(bizData ?? []);
       setStrategies((stratData ?? []) as StrategyRecord[]);
@@ -84,9 +107,11 @@ export function SmmStrategiesPage() {
   }, []);
 
   useEffect(() => {
-    if (!selectedStrategy) { setSmmStrategy(null); return; }
+    if (!selectedStrategy) { setSmmStrategy(null); setTechStack(null); return; }
     setSmmStrategy(selectedStrategy.smm_strategy ?? null);
+    setTechStack(selectedStrategy.tech_stack ?? null);
     setExpandedPersona(null);
+    setTechError('');
   }, [selectedStrategy]);
 
   const generateSmm = async () => {
@@ -119,6 +144,35 @@ export function SmmStrategiesPage() {
       setError('Elsa could not generate the SMM strategy. Please try again.');
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const scrapeTechnology = async () => {
+    if (!selectedStrategy) return;
+    setIsScrapingTech(true);
+    setTechError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Session expirée, veuillez vous reconnecter.');
+
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/scrape-technology`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ website: selectedStrategy.website, strategyId: selectedStrategy.id }),
+      });
+      const result = await response.json();
+      if (!response.ok || !Array.isArray(result.items)) {
+        throw new Error(typeof result.error === 'string' ? result.error : 'Technology scan failed');
+      }
+      setTechStack(result.items as TechItem[]);
+      setStrategies(prev => prev.map(s => s.id === selectedStrategy.id ? { ...s, tech_stack: result.items } : s));
+    } catch (e) {
+      setTechError(e instanceof Error ? e.message : 'Le scan technologique a échoué. Réessayez.');
+    } finally {
+      setIsScrapingTech(false);
     }
   };
 
@@ -249,7 +303,7 @@ export function SmmStrategiesPage() {
                               <PersonaList title="KPIs" items={persona.kpis} color="text-blue-600" />
                               <PersonaList title="Responsibilities" items={persona.responsibilities} color="text-gray-600" />
                             </div>
-                            <div className="flex flex-col sm:flex-row gap-1 sm:gap-6 text-sm">
+                            <div className="flex gap-6 text-sm">
                               <div><span className="text-gray-400">Reports to: </span><span className="text-gray-700 font-medium">{persona.reportingTo}</span></div>
                               <div><span className="text-gray-400">Buying role: </span><span className="text-gray-700 font-medium">{persona.buyingRole}</span></div>
                             </div>
@@ -274,6 +328,68 @@ export function SmmStrategiesPage() {
               <p className="text-xs text-gray-400">Click "Create new strategy" to let Elsa calculate your TAM, SAM, SOM and buyer personas.</p>
             </div>
           )}
+
+          {/* Technology Scraper */}
+          <div className="mt-8 bg-white rounded-2xl border border-gray-100 p-6 sm:p-8">
+            <div className="flex items-center justify-between gap-4 mb-2">
+              <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <Cpu size={20} className="text-blue-600" /> Technology Scraper
+              </h2>
+              <button
+                onClick={scrapeTechnology}
+                disabled={isScrapingTech}
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors flex items-center gap-2"
+              >
+                {isScrapingTech ? (
+                  <><RefreshCw size={14} className="animate-spin" /> Scan en cours...</>
+                ) : techStack ? (
+                  <><RefreshCw size={14} /> Relancer le scan</>
+                ) : (
+                  <><Cpu size={14} /> Lancer le scan</>
+                )}
+              </button>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">
+              Détecte les technologies utilisées sur {selectedStrategy.website} (analytics, CRM, publicité, CMS...) — utile pour qualifier rapidement où vous avez le plus de chances de pénétrer.
+            </p>
+
+            {techError && <p className="text-sm text-red-600 mb-4">{techError}</p>}
+
+            {techStack && techStack.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100">
+                      <th className="py-2 pr-4">Technologie</th>
+                      <th className="py-2 pr-4">Tag</th>
+                      <th className="py-2 pr-4">Catégories</th>
+                      <th className="py-2">Lien</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {techStack.map((t, i) => (
+                      <tr key={i} className="border-b border-gray-50 last:border-0">
+                        <td className="py-2 pr-4 font-medium text-gray-900 whitespace-nowrap">{t.name}</td>
+                        <td className="py-2 pr-4">
+                          <span className="text-xs font-medium text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full">{t.tag}</span>
+                        </td>
+                        <td className="py-2 pr-4 text-gray-600">{t.categories.join(', ') || '—'}</td>
+                        <td className="py-2">
+                          {t.link && (
+                            <a href={t.link} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline text-xs">
+                              {t.link.replace(/^https?:\/\//, '')}
+                            </a>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : !isScrapingTech && !techError ? (
+              <p className="text-sm text-gray-400">Aucun scan effectué pour le moment.</p>
+            ) : null}
+          </div>
         </>
       )}
     </div>
@@ -303,30 +419,53 @@ function MarketCard({ layer, label, title, color, icon }: { layer: MarketLayer; 
     <div className={`rounded-2xl border ${c.border} ${c.card} p-5 sm:p-6`}>
       <div className="flex items-center gap-3 mb-3">
         <span className={`w-8 h-8 rounded-lg ${c.badge} text-white flex items-center justify-center flex-shrink-0`}>{icon}</span>
-        <div className="min-w-0">
+        <div>
           <p className={`text-xs font-bold ${c.text}`}>{label}</p>
-          <h3 className="font-bold text-gray-900 text-sm sm:text-base">{title}</h3>
+          <h3 className="font-bold text-gray-900 text-base">{title}</h3>
         </div>
-        <span className={`ml-auto text-base sm:text-lg font-bold ${c.text} whitespace-nowrap`}>{formatNumber(layer.marketValue)}</span>
+        <span className={`ml-auto text-lg font-bold ${c.text}`}>{formatNumber(layer.marketValue)}</span>
       </div>
+      {layer.targetSector && (
+        <p className="text-xs font-semibold text-blue-700 bg-blue-50 inline-block px-2 py-1 rounded-lg mb-2">
+          Secteur ciblé : {layer.targetSector}
+        </p>
+      )}
       <p className="text-sm text-gray-700 leading-relaxed mb-4">{layer.description}</p>
       {layer.basedOnEstimates && (
         <p className="text-xs font-medium text-amber-600 bg-amber-50 inline-block px-2 py-0.5 rounded-full mb-3">
           Basé en partie sur des estimations non vérifiées
         </p>
       )}
-      <div className="grid grid-cols-3 gap-2 sm:gap-4">
+      {layer.filters && layer.filters.length > 0 && (
+        <div className="mb-4">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Filtres appliqués</p>
+          <ul className="space-y-1">
+            {layer.filters.map((f, i) => (
+              <li key={i} className="text-xs text-gray-600">
+                <span className="font-medium text-gray-800">{f.criterion}</span> — {f.justification}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {layer.cappedByCapacity && (
+        <p className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg mb-4">
+          Plafonné par votre capacité réelle ({formatNumber(layer.salesCapacityPerYear ?? 0)} clients/an) plutôt que par le volume de leads
+          ({formatNumber(layer.funnelPotentialCustomers ?? 0)} potentiels selon le funnel). {layer.salesCapacityRationale}
+        </p>
+      )}
+      <div className="grid grid-cols-3 gap-4">
         <div>
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Potential</p>
-          <p className="text-xs sm:text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.potentialCustomers)}</p>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Potential customers</p>
+          <p className="text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.potentialCustomers)}</p>
         </div>
         <div>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">ACV</p>
-          <p className="text-xs sm:text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.acv)}</p>
+          <p className="text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.acv)}</p>
         </div>
         <div>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Market value</p>
-          <p className="text-xs sm:text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.marketValue)}</p>
+          <p className="text-sm text-gray-800 font-medium mt-1">{formatNumber(layer.marketValue)}</p>
         </div>
       </div>
       {layer.contributions && layer.contributions.length > 0 && (
