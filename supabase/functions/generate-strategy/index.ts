@@ -2,8 +2,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 /**
- * generate-strategy — v2.4 (prospecting kit replaces KPIs + anonymous-aware security)
+ * generate-strategy — v2.5 (+ businessContext passthrough for SOM capacity cross-check)
  * ---------------------------------------------------------------------------------------
+ * v2.5 change: the response now includes "businessContext": { teamSize, monthlyBudget,
+ * companyAge } — a deterministic passthrough of the form's own fields, not LLM-generated.
+ * generate-content.ts v1.3's smm_strategy mode reads this to cap the SOM by the team's
+ * actual capacity instead of only summing a lead funnel. No prompt change needed for this.
+ *
  * v2.4 change: the "kpis" field is REMOVED and replaced by "prospectingKit" — a
  * ready-to-use prospecting kit instead of abstract targets:
  *   - prospectJobTitle / prospectJobTitleRationale: ONE precise job title to call first
@@ -78,12 +83,30 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
  * prospectingKit (see above), and an extended _meta (estimatedClaims).
  */
 
-const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || "*"; // v2.2: set this in production instead of "*"
-const corsHeaders = {
-  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
-};
+const STATIC_ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || ""; // e.g. https://mplateform.netlify.app
+
+// v2.6: a single static origin breaks dev previews — bolt.new/WebContainer preview URLs
+// (*.webcontainer-api.io) change every session, so hardcoding one exact value locks out
+// every preview after the first. This reflects the request's own Origin header back when it
+// matches a known-safe pattern (the configured production origin, a WebContainer preview, or
+// localhost), and falls back to STATIC_ALLOWED_ORIGIN (or "*" if unset) for anything else —
+// which still blocks truly unknown origins, same intent as before, just not single-value.
+function buildCorsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin") || req.headers.get("origin") || "";
+  let allowOrigin = STATIC_ALLOWED_ORIGIN || "*";
+  if (origin) {
+    const isConfigured = STATIC_ALLOWED_ORIGIN && origin === STATIC_ALLOWED_ORIGIN;
+    const isWebContainerPreview = /^https:\/\/[a-z0-9.-]+\.webcontainer-api\.io$/i.test(origin);
+    const isLocalDev = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+    if (isConfigured || isWebContainerPreview || isLocalDev) allowOrigin = origin;
+  }
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+    "Vary": "Origin",
+  };
+}
 
 interface StrategyRequest {
   website: string;
@@ -802,6 +825,8 @@ Return ONLY the JSON object.`;
 // ---------------------------------------------------------------------------
 
 Deno.serve(async (req: Request) => {
+  const corsHeaders = buildCorsHeaders(req); // v2.6: per-request, see buildCorsHeaders above
+
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
@@ -1059,6 +1084,10 @@ Deno.serve(async (req: Request) => {
 
     const responsePayload = {
       ...strategy,
+      // v2.5: deterministic passthrough of the form's own declarations (NOT LLM-generated,
+      // so zero hallucination risk) — lets downstream consumers (generate-content's SOM
+      // capacity cross-check) know the team's actual size/budget without a second lookup.
+      businessContext: { teamSize, monthlyBudget: body.monthlyBudget ?? null, companyAge },
       _meta: {
         crawledPages: crawl.pages.map((p) => p.url),
         serpQueries: serpResults.map((s) => s.query),
@@ -1080,4 +1109,3 @@ Deno.serve(async (req: Request) => {
     );
   }
 });
-
