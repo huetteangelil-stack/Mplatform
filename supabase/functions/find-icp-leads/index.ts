@@ -128,6 +128,11 @@ ${persona}
 
 Infer reasonable filters (job titles, company industry, company size, geography) from the SEGMENT and PERSONA text above, strictly using fields documented in the reference above. Model the query on the reference's own examples (typically "select from people where ...").
 
+CRITICAL RULES:
+- Copy enum values EXACTLY as they appear in the reference, including capitalization and hyphenation. For example, if the reference says "C-suite", write "C-suite" — NOT "C-Suite", "C suite", or "CSuite".
+- Do not paraphrase, reformat, or "fix" any field name or enum value from the reference.
+- If you are unsure whether a value is valid, omit the filter rather than guessing.
+
 Return ONLY this JSON, no markdown: {"query": "the complete query string"}`;
 
   try {
@@ -137,6 +142,50 @@ Return ONLY this JSON, no markdown: {"query": "the complete query string"}`;
     return { error: "Could not derive a valid query from the ICP text" };
   } catch (e) {
     return { error: "Query generation failed: " + (e instanceof Error ? e.message : String(e)) };
+  }
+}
+
+// Retry with the Clay API error message so DeepSeek can fix the exact issue.
+async function fixClayQuery(segment: string, persona: string, clayKey: string, previousQuery: string, clayError: string): Promise<{ query: string } | { error: string }> {
+  let referenceText = "";
+  try {
+    const refRes = await fetch("https://api.clay.com/public/v0/search/query-mode/reference", {
+      headers: { "clay-api-key": clayKey },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (refRes.ok) {
+      const refJson = await refRes.json();
+      referenceText = typeof refJson?.reference === "string" ? refJson.reference : "";
+    }
+  } catch { /* ignore — we still have the error message to work with */ }
+
+  const prompt = `You write queries in Clay's "query-mode" search DSL. Your previous query was REJECTED by Clay with this error:
+
+ERROR: ${clayError}
+
+REJECTED QUERY:
+${previousQuery}
+
+=== CLAY QUERY-MODE REFERENCE (live, authoritative) ===
+${referenceText.slice(0, 12000)}
+
+Fix the query so it passes Clay's validation. The error tells you exactly what is wrong — typically a wrong enum value or an invalid field name. Copy the correct value EXACTLY from the reference above, preserving capitalization and hyphenation.
+
+SEGMENT:
+${segment}
+
+PERSONA:
+${persona}
+
+Return ONLY this JSON, no markdown: {"query": "the corrected query string"}`;
+
+  try {
+    const raw = await callDeepSeek([{ role: "user", content: prompt }], 0.2, 600);
+    const parsed = extractJsonValue(raw) as any;
+    if (typeof parsed?.query === "string" && parsed.query.trim()) return { query: parsed.query.trim() };
+    return { error: `Clay rejected the query and the correction failed: ${clayError}` };
+  } catch (e) {
+    return { error: `Clay rejected the query (${clayError}) and correction failed: ` + (e instanceof Error ? e.message : String(e)) };
   }
 }
 
@@ -209,14 +258,34 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ error: queryResult.error }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
-    const { query } = queryResult;
+    let query = queryResult.query;
 
-    const createRes = await fetch("https://api.clay.com/public/v0/search/query-mode", {
+    let createRes = await fetch("https://api.clay.com/public/v0/search/query-mode", {
       method: "POST",
       headers: { "Content-Type": "application/json", "clay-api-key": clayKey },
       body: JSON.stringify({ query }),
       signal: AbortSignal.timeout(20000),
     });
+
+    // If Clay rejects the query with a 400, send the error back to DeepSeek for a one-shot fix.
+    if (!createRes.ok && createRes.status === 400) {
+      const errBody = await createRes.json().catch(() => null);
+      const clayError = errBody?.message ?? `400 Bad Request`;
+      const fixResult = await fixClayQuery(body.segment, body.persona, clayKey, query, clayError);
+      if ("query" in fixResult) {
+        query = fixResult.query;
+        createRes = await fetch("https://api.clay.com/public/v0/search/query-mode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "clay-api-key": clayKey },
+          body: JSON.stringify({ query }),
+          signal: AbortSignal.timeout(20000),
+        });
+      } else {
+        return new Response(JSON.stringify({ error: fixResult.error, query }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
     if (!createRes.ok) {
       const errBody = await createRes.json().catch(() => null);
       return new Response(JSON.stringify({ error: `Clay search creation failed: ${createRes.status} ${errBody?.message ?? ""}`.trim(), query }),
