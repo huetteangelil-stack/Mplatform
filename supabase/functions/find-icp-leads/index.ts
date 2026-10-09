@@ -195,7 +195,7 @@ Deno.serve(async (req: Request) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const clayKey = envFirst(["CLAY_API_KEY", "CLAY_PUBLIC_API_KEY", "CLAY-API-KEY"]);
+    const clayKey = envFirst(["CLAY_API_Key", "CLAY_API_KEY", "CLAY_PUBLIC_API_KEY", "CLAY-API-KEY"]);
     if (!clayKey) {
       return new Response(JSON.stringify({ error: "CLAY_API_KEY is not configured" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
