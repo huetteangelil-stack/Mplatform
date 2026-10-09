@@ -7,3 +7,6 @@ verify_jwt = true
 
 [functions.scrape-technology]
 verify_jwt = true
+
+[functions.find-icp-leads]
+verify_jwt = true

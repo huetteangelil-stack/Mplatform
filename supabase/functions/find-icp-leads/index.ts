@@ -1,0 +1,264 @@
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
+
+const STATIC_ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || "";
+function buildCorsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin") || req.headers.get("origin") || "";
+  let allowOrigin = STATIC_ALLOWED_ORIGIN || "*";
+  if (origin) {
+    const isConfigured = STATIC_ALLOWED_ORIGIN && origin === STATIC_ALLOWED_ORIGIN;
+    const isWebContainerPreview = /^https:\/\/[a-z0-9.-]+\.webcontainer-api\.io$/i.test(origin);
+    const isLocalDev = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+    if (isConfigured || isWebContainerPreview || isLocalDev) allowOrigin = origin;
+  }
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+    "Vary": "Origin",
+  };
+}
+
+const MAX_SAFE_LIMIT = 20;
+const DEFAULT_RESULT_LIMIT = 2;
+const DAILY_QUOTA = 10;
+
+function envFirst(names: string[]): string | undefined {
+  for (const n of names) {
+    const v = Deno.env.get(n);
+    if (v && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+interface FindLeadsRequest {
+  segment: string;
+  persona: string;
+  limit?: number;
+}
+
+interface ClayMatchedExperience {
+  company: string | null;
+  title: string | null;
+  location: string | null;
+  start_date: string | null;
+  end_date: string | null;
+}
+interface ClayPersonResult {
+  clay_profile_id: number;
+  name: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  linkedin_url: string | null;
+  location: { name: string | null; city: string | null; state_or_province: string | null };
+  matched_experiences: ClayMatchedExperience[];
+}
+
+async function callDeepSeek(messages: { role: string; content: string }[], temperature: number, maxTokens: number): Promise<string> {
+  const res = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("DEEPSEEK_API_KEY")}` },
+    body: JSON.stringify({ model: "deepseek-chat", messages, max_tokens: maxTokens, temperature }),
+  });
+  if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
+  const data = await res.json();
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content !== "string") throw new Error("DeepSeek returned an empty response");
+  return content;
+}
+
+function extractJsonValue(content: string): unknown | null {
+  const text = content.replace(/```(?:json)?/gi, "").trim();
+  const start = text.search(/[\[{]/);
+  if (start === -1) return null;
+  const openChar = text[start];
+  const closeChar = openChar === "{" ? "}" : "]";
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === openChar) depth++;
+    else if (c === closeChar) {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+
+async function buildClayQuery(segment: string, persona: string, clayKey: string): Promise<{ query: string } | { error: string }> {
+  let referenceText = "";
+  try {
+    const refRes = await fetch("https://api.clay.com/public/v0/search/query-mode/reference", {
+      headers: { "clay-api-key": clayKey },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!refRes.ok) {
+      const errBody = await refRes.json().catch(() => null);
+      return { error: `Clay reference fetch failed: ${refRes.status} ${errBody?.message ?? ""}`.trim() };
+    }
+    const refJson = await refRes.json();
+    referenceText = typeof refJson?.reference === "string" ? refJson.reference : "";
+  } catch (e) {
+    return { error: "Clay reference fetch failed: " + (e instanceof Error ? e.message : String(e)) };
+  }
+  if (!referenceText.trim()) return { error: "Clay reference response was empty" };
+
+  const prompt = `You write queries in Clay's "query-mode" search DSL (a SQL-like language for finding people/companies). Below is Clay's OWN live reference documentation for this DSL — use ONLY fields and operators that appear in it, never invent one.
+
+=== CLAY QUERY-MODE REFERENCE (live, authoritative) ===
+${referenceText.slice(0, 12000)}
+
+=== TASK ===
+Build ONE query that searches for real PEOPLE matching this Ideal Customer Profile. These are the BUYERS/decision-makers to find and contact — not the vendor's own team.
+
+SEGMENT (who the target companies/buyers are):
+${segment}
+
+PERSONA (psychographics / buying behavior of the target buyer):
+${persona}
+
+Infer reasonable filters (job titles, company industry, company size, geography) from the SEGMENT and PERSONA text above, strictly using fields documented in the reference above. Model the query on the reference's own examples (typically "select from people where ...").
+
+Return ONLY this JSON, no markdown: {"query": "the complete query string"}`;
+
+  try {
+    const raw = await callDeepSeek([{ role: "user", content: prompt }], 0.2, 600);
+    const parsed = extractJsonValue(raw) as any;
+    if (typeof parsed?.query === "string" && parsed.query.trim()) return { query: parsed.query.trim() };
+    return { error: "Could not derive a valid query from the ICP text" };
+  } catch (e) {
+    return { error: "Query generation failed: " + (e instanceof Error ? e.message : String(e)) };
+  }
+}
+
+Deno.serve(async (req: Request) => {
+  const corsHeaders = buildCorsHeaders(req);
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  const authHeader = req.headers.get("Authorization") || "";
+  const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const supabaseAdmin = supabaseUrl && serviceRoleKey ? createClient(supabaseUrl, serviceRoleKey) : null;
+
+  if (supabaseAdmin) {
+    if (!jwt) {
+      return new Response(JSON.stringify({ error: "Missing Authorization header" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(jwt);
+    if (userErr || !userData?.user) {
+      return new Response(JSON.stringify({ error: "Invalid or expired session" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const userId = userData.user.id;
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: quotaRow, error: quotaErr } = await supabaseAdmin
+        .from("icp_lead_search_quota")
+        .select("count")
+        .eq("user_id", userId)
+        .eq("day", today)
+        .maybeSingle();
+      if (!quotaErr) {
+        const current = quotaRow?.count ?? 0;
+        if (current >= DAILY_QUOTA) {
+          return new Response(JSON.stringify({ error: "Daily search quota exceeded" }),
+            { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+        await supabaseAdmin
+          .from("icp_lead_search_quota")
+          .upsert({ user_id: userId, day: today, count: current + 1 }, { onConflict: "user_id,day" });
+      }
+    } catch (quotaEx) {
+      console.warn("icp_lead_search_quota check skipped:", quotaEx);
+    }
+  } else {
+    console.warn("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set — auth/quota guard disabled.");
+  }
+
+  try {
+    const body = await req.json() as FindLeadsRequest;
+    if (!body.segment || !body.persona) {
+      return new Response(JSON.stringify({ error: "segment and persona are required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    const clayKey = envFirst(["CLAY_API_KEY", "CLAY_PUBLIC_API_KEY", "CLAY-API-KEY"]);
+    if (!clayKey) {
+      return new Response(JSON.stringify({ error: "CLAY_API_KEY is not configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    const requestedLimit = Number(body.limit) || DEFAULT_RESULT_LIMIT;
+    const limit = Math.max(1, Math.min(requestedLimit, MAX_SAFE_LIMIT));
+
+    const queryResult = await buildClayQuery(body.segment, body.persona, clayKey);
+    if ("error" in queryResult) {
+      return new Response(JSON.stringify({ error: queryResult.error }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const { query } = queryResult;
+
+    const createRes = await fetch("https://api.clay.com/public/v0/search/query-mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "clay-api-key": clayKey },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!createRes.ok) {
+      const errBody = await createRes.json().catch(() => null);
+      return new Response(JSON.stringify({ error: `Clay search creation failed: ${createRes.status} ${errBody?.message ?? ""}`.trim(), query }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const created = await createRes.json();
+    const searchId = created?.search_id;
+    if (!searchId) {
+      return new Response(JSON.stringify({ error: "Clay did not return a search_id", query, response: created }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    const runRes = await fetch(`https://api.clay.com/public/v0/search/query-mode/${searchId}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "clay-api-key": clayKey },
+      body: JSON.stringify({ limit }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!runRes.ok) {
+      const errBody = await runRes.json().catch(() => null);
+      return new Response(JSON.stringify({ error: `Clay search run failed: ${runRes.status} ${errBody?.message ?? ""}`.trim(), query, searchId }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const runResult = await runRes.json() as { data?: ClayPersonResult[]; has_more?: boolean; source_type?: string; period_quota?: { limit: number; used: number; remaining: number; resets_at: string } };
+    const results = Array.isArray(runResult?.data) ? runResult.data : [];
+
+    return new Response(
+      JSON.stringify({
+        query,
+        searchId,
+        limitUsed: limit,
+        count: results.length,
+        results,
+        hasMore: runResult.has_more ?? false,
+        periodQuota: runResult.period_quota ?? null,
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Lead search failed" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+});
