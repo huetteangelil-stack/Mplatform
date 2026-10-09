@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Download, LockKeyhole, RefreshCw, Share2, Sparkles } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Download, ExternalLink, LockKeyhole, RefreshCw, Search, Share2, Sparkles, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 
@@ -79,6 +79,10 @@ export function IdealCustomerProfilesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState('');
+  const [realLeads, setRealLeads] = useState<ClayLead[] | null>(null);
+  const [isSearchingLeads, setIsSearchingLeads] = useState(false);
+  const [leadsError, setLeadsError] = useState('');
+  const [showRawLead, setShowRawLead] = useState<number | null>(null);
 
   const selectedStrategy = useMemo(
     () => strategies.find(strategy => strategy.id === selectedStrategyId) ?? strategies[0] ?? null,
@@ -111,6 +115,8 @@ export function IdealCustomerProfilesPage() {
     if (!selectedStrategy) return;
     setInsights(selectedStrategy.icp_insights ?? []);
     setExpandedInsight(null);
+    setRealLeads(null);
+    setLeadsError('');
   }, [selectedStrategy]);
 
   const generateInsights = async () => {
@@ -145,6 +151,35 @@ export function IdealCustomerProfilesPage() {
       setError('Elsa could not generate the customer insights. Please try again.');
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const findRealLeads = async () => {
+    if (!icp) return;
+    setIsSearchingLeads(true);
+    setLeadsError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Session expirée, veuillez vous reconnecter.');
+
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/find-icp-leads`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        // limit: 2 — the function hard-caps at 20 regardless, this just states the actual need
+        body: JSON.stringify({ segment: icp.demographics, persona: icp.psychographics, limit: 2 }),
+      });
+      const result = await response.json();
+      if (!response.ok || !Array.isArray(result.results)) {
+        throw new Error(typeof result.error === 'string' ? result.error : 'Lead search failed');
+      }
+      setRealLeads(result.results);
+    } catch (e) {
+      setLeadsError(e instanceof Error ? e.message : 'La recherche a échoué. Réessayez.');
+    } finally {
+      setIsSearchingLeads(false);
     }
   };
 
@@ -199,6 +234,34 @@ export function IdealCustomerProfilesPage() {
         <ProfileSummary label="Request" value="B2B" color="bg-blue-600" />
         <ProfileSummary label="Segment" value={segment} color="bg-green-500" />
         <ProfileSummary label="Persona" value={persona} color="bg-green-500" />
+      </div>
+
+      {/* Real, contactable ICP examples via Clay */}
+      <div className="bg-white border border-gray-100 rounded-2xl p-5 sm:p-7 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-2">
+          <h2 className="text-base font-bold text-gray-900 flex items-center gap-2">
+            <Users size={18} className="text-blue-600" /> Exemples réels contactables
+          </h2>
+          <button
+            onClick={findRealLeads}
+            disabled={isSearchingLeads}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-colors whitespace-nowrap"
+          >
+            {isSearchingLeads ? <RefreshCw size={15} className="animate-spin" /> : <Search size={15} />}
+            {isSearchingLeads ? 'Recherche en cours...' : realLeads ? 'Relancer la recherche' : 'Trouver 2 exemples réels'}
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mb-4">Recherche 2 personnes réelles correspondant au Segment et au Persona ci-dessus, à partir de votre base Clay.</p>
+
+        {leadsError && <div className="mb-3 p-3 bg-red-50 border border-red-100 text-red-600 rounded-lg text-sm">{leadsError}</div>}
+
+        {realLeads && realLeads.length > 0 ? (
+          <div className="grid sm:grid-cols-2 gap-4">
+            {realLeads.map((lead, i) => <LeadCard key={i} lead={lead} index={i} showRaw={showRawLead === i} onToggleRaw={() => setShowRawLead(showRawLead === i ? null : i)} />)}
+          </div>
+        ) : realLeads && realLeads.length === 0 ? (
+          <p className="text-sm text-gray-400">Aucun exemple trouvé pour ce profil. Essayez de régénérer la stratégie pour affiner le Segment/Persona.</p>
+        ) : null}
       </div>
 
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
@@ -259,6 +322,59 @@ export function IdealCustomerProfilesPage() {
 
 function ProfileSummary({ label, value, color }: { label: string; value: string; color: string }) {
   return <div className="flex gap-3 items-start"><span className={`w-7 h-7 rounded-full ${color} flex items-center justify-center flex-shrink-0`}><Check size={15} className="text-white" /></span><div><p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{label}</p><p className="text-sm text-gray-800 mt-1 leading-snug">{value}</p></div></div>;
+}
+
+interface ClayMatchedExperience {
+  company: string | null;
+  title: string | null;
+  location: string | null;
+  start_date: string | null;
+  end_date: string | null;
+}
+
+interface ClayLead {
+  clay_profile_id: number;
+  name: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  linkedin_url: string | null;
+  location: { name: string | null; city: string | null; state_or_province: string | null };
+  matched_experiences: ClayMatchedExperience[];
+}
+
+// Field names confirmed against developers.clay.com's OpenAPI spec (PublicApiPersonSearchResult)
+// — NOT a guess. A raw search result never carries an email; that needs the separate
+// enrichment step noted in find-icp-leads.ts, not implemented yet (see that file's header).
+function LeadCard({ lead, index, showRaw, onToggleRaw }: { lead: ClayLead; index: number; showRaw: boolean; onToggleRaw: () => void }) {
+  const name = lead.name || [lead.first_name, lead.last_name].filter(Boolean).join(' ') || `Contact ${index + 1}`;
+  const current = lead.matched_experiences?.[0]; // the role the search actually matched on
+  const location = lead.location?.name || [lead.location?.city, lead.location?.state_or_province].filter(Boolean).join(', ') || '';
+
+  return (
+    <div className="p-4 bg-gradient-to-br from-blue-50 to-gray-50 rounded-xl border border-blue-100">
+      <p className="font-semibold text-gray-900 text-sm">{name}</p>
+      {current && (current.title || current.company) && (
+        <p className="text-sm text-gray-600">{current.title}{current.title && current.company && ' · '}{current.company}</p>
+      )}
+      {location && <p className="text-xs text-gray-400 mt-0.5">{location}</p>}
+      <div className="flex flex-wrap items-center gap-3 mt-2">
+        {lead.linkedin_url && (
+          <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-blue-600 hover:underline flex items-center gap-1">
+            LinkedIn <ExternalLink size={11} />
+          </a>
+        )}
+        <span className="text-xs text-gray-400 italic">Email : nécessite un enrichissement (non branché)</span>
+      </div>
+      <button onClick={onToggleRaw} className="text-xs text-gray-400 hover:text-gray-600 mt-2 underline">
+        {showRaw ? 'Masquer les données brutes' : 'Voir les données brutes'}
+      </button>
+      {showRaw && (
+        <pre className="mt-2 p-2 bg-gray-900 text-gray-100 text-[10px] rounded-lg overflow-x-auto max-h-48">
+          {JSON.stringify(lead, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function ProfileRow({ title, description, badge }: { title: string; description: string; badge?: string }) {
